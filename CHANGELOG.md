@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.82.1](https://github.com/kunchenguid/no-mistakes/compare/v1.82.0...v1.82.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **gate:** detect fork-as-origin layout and refuse with --fork-url guidance ([#1183](https://github.com/kunchenguid/no-mistakes/issues/1183)) ([a7ab68b](https://github.com/kunchenguid/no-mistakes/commit/a7ab68b144de59baf11595b8a463370072aaf62a))
+* **pipeline:** resolve branch base against freshly fetched base-branch tip ([#1147](https://github.com/kunchenguid/no-mistakes/issues/1147)) ([de50789](https://github.com/kunchenguid/no-mistakes/commit/de5078977e24f8752d88b8527221d8e15a1b9bcf))
+
 ## [1.82.0](https://github.com/kunchenguid/no-mistakes/compare/v1.81.0...v1.82.0) (2026-09-23)
 
 
