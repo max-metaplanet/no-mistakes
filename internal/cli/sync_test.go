@@ -1554,6 +1554,10 @@ func TestAxiBindRecoveryArchiveRejectsTagsAndRemoteTrackingRefs(t *testing.T) {
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
+		{"sync", "--recover", "--keep", "local", "--observed", "token", "--observed-head", "abc", "--reworded-head", "def"},
+		{"axi", "sync", "--recover", "--keep", "local", "--observed", "token", "--observed-head", "abc", "--reworded-head", "def"},
+		{"sync", "--recover", "--keep", "local", "--observed", "token", "--reworded-head", ""},
+		{"axi", "sync", "--recover", "--keep", "local", "--observed", "token", "--observed-head", ""},
 		{"sync", "--recover", "--reworded-head", "abc"},
 		{"sync", "--observed-head", "abc"},
 		{"sync", "--recover", "--observed-head", "abc", "--reworded-head", "def", "--keep-local"},
@@ -1564,12 +1568,20 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--check", "--adopt-published"},
 		{"sync", "--recover", "--adopt-published"},
 		{"sync", "--keep-local"},
+		{"sync", "--keep", "local", "--observed", "token"},
+		{"sync", "--recover", "--keep", "pipeline"},
+		{"sync", "--recover", "--keep", "invalid", "--observed", "token"},
+		{"sync", "--recover", "--keep-local", "--keep", "local", "--observed", "token"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--check", "--adopt-published"},
 		{"axi", "sync", "--recover", "--adopt-published"},
 		{"axi", "sync", "--keep-local"},
+		{"axi", "sync", "--keep", "local", "--observed", "token"},
+		{"axi", "sync", "--recover", "--observed", "token"},
+		{"axi", "sync", "--recover", "--keep", "invalid", "--observed", "token"},
+		{"axi", "sync", "--recover", "--keep-local", "--keep", "local", "--observed", "token"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
 	} {
 		out, err := executeCmd(args...)

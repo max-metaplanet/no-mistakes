@@ -19,6 +19,7 @@ var syncInteractive = terminalInteractive
 func newSyncCmd() *cobra.Command {
 	var check, yes, recover, keepLocal, adoptPublished bool
 	var bindArchiveRef, rewordedHead, observedHead string
+	var keep, observed string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Safely move the current branch to an exact pipeline-pushed head",
@@ -45,6 +46,12 @@ func newSyncCmd() *cobra.Command {
 			"published there.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("keep") || cmd.Flags().Changed("observed") {
+				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
+					return &exitError{code: 2, err: fmt.Errorf("--keep and --observed require --recover and cannot be combined with other recovery modes")}
+				}
+				return runReconciliation(cmd, keep, observed, false)
+			}
 			if cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
 				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || rewordedHead == "" || observedHead == "" {
 					return emitError(cmd, 2, "--reworded-head and --observed-head require --recover, both full commit IDs, and no other recovery mode")
@@ -85,12 +92,14 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
 	cmd.Flags().StringVar(&rewordedHead, "reworded-head", "", "with --recover and --observed-head: recover an explicitly named metadata-only rewrite from a failed pre-push Review round")
 	cmd.Flags().StringVar(&observedHead, "observed-head", "", "exact recorded pipeline head from status, required with --reworded-head")
+	addReconciliationFlags(cmd, &keep, &observed)
 	return cmd
 }
 
 func newAxiSyncCmd() *cobra.Command {
 	var check, recover, keepLocal, adoptPublished bool
 	var bindArchiveRef, rewordedHead, observedHead string
+	var keep, observed string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -113,6 +122,12 @@ func newAxiSyncCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("keep") || cmd.Flags().Changed("observed") {
+				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
+					return emitError(cmd, 2, "--keep and --observed require --recover and cannot be combined with other recovery modes")
+				}
+				return runReconciliation(cmd, keep, observed, true)
+			}
 			if cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
 				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || rewordedHead == "" || observedHead == "" {
 					return emitError(cmd, 2, "--reworded-head and --observed-head require --recover, both full commit IDs, and no other recovery mode")
@@ -137,7 +152,45 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
 	cmd.Flags().StringVar(&rewordedHead, "reworded-head", "", "with --recover and --observed-head: recover an explicitly named metadata-only rewrite from a failed pre-push Review round")
 	cmd.Flags().StringVar(&observedHead, "observed-head", "", "exact recorded pipeline head from status, required with --reworded-head")
+	addReconciliationFlags(cmd, &keep, &observed)
 	return cmd
+}
+
+func addReconciliationFlags(cmd *cobra.Command, keep, observed *string) {
+	cmd.Flags().StringVar(keep, "keep", "", "with --recover --observed: explicitly keep local, pipeline, or pushed after a cancelled post-push run; preserve all observed heads")
+	cmd.Flags().StringVar(observed, "observed", "", "with --recover --keep: require the exact observation token from branch_sync.next_action; refuse changed evidence")
+}
+
+func runReconciliation(cmd *cobra.Command, keep, observed string, axi bool) error {
+	if (keep != "local" && keep != "pipeline" && keep != "pushed") || observed == "" {
+		message := "--recover --keep requires local, pipeline, or pushed and the --observed token from branch_sync.next_action"
+		if axi {
+			return emitError(cmd, 2, message)
+		}
+		return &exitError{code: 2, err: fmt.Errorf("%s", message)}
+	}
+	service, closeFn, err := openSyncService()
+	if err != nil {
+		if axi {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+		return err
+	}
+	defer closeFn()
+	state := service.Reconcile(cmd.Context(), keep, observed)
+	if axi {
+		fields := []toON.Field{branchSyncField(state)}
+		if !state.Recovered && state.Error != "" {
+			fields = append(fields, toON.Field{Key: "error", Value: state.Error})
+		}
+		emitDoc(cmd, fields...)
+	} else {
+		printHumanSyncState(cmd, state)
+	}
+	if !state.Recovered {
+		return &exitError{code: 1}
+	}
+	return nil
 }
 
 func openSyncService() (*branchsync.Service, func(), error) {
