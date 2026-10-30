@@ -1309,7 +1309,7 @@ repository_overrides:
 
 Test runs the configured command first, through `wrapper` when set, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
 The wrapper runs as `<wrapper> <configured test command string>` in the same working directory and environment as the original command, with the entire command string passed as **one argument** without shell expansion. Its exit status and combined stdout/stderr become the configured Test result and evidence. A wrapper may run the command remotely or wrap local execution; no-mistakes does not also execute that command itself.
-`nice` also applies to the wrapper process. Additional checks run afterwards unchanged and are never wrapped, including when the wrapper fails. A wrapper is invoked only when a configured Test command exists, including an opted-in base-attribution rerun.
+`nice` also applies to the wrapper process. Additional checks run afterwards unchanged and are never wrapped, including when the wrapper exits non-zero; execution errors or cancellation stop the sequence. A wrapper is invoked only when a configured Test command exists, including an opted-in base-attribution rerun, where it receives the disposable base checkout as its working directory.
 Empty or relative wrapper paths (including `~/...`) are configuration errors; missing or non-executable wrappers fail execution. `wrapper` is refused for every command other than Test and in repository config.
 Test still performs its unconditional agent-driven end-user scenarios afterwards.
 Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
@@ -1324,7 +1324,7 @@ These settings are scoped to configured shell commands and their local checks, n
 There is no per-command environment override.
 Toolchain paths (such as `PATH`) and parallelism settings (such as `GOMAXPROCS`) come from the operator's own environment, which the daemon captures at startup and passes to every configured command; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
 
-`nice: 10` invokes the POSIX `nice -n 10` utility around the command shell, adding ten to its inherited niceness, not setting an absolute priority.
+`nice: 10` invokes the POSIX `nice -n 10` utility around the command process, adding ten to its inherited niceness, not setting an absolute priority.
 Positive niceness is refused on Windows; set resource limits in the operator's own environment there.
 A missing `nice` utility fails the command rather than silently ignoring the request.
 
