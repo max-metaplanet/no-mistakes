@@ -337,3 +337,128 @@ func TestTestStep_PassingLocalChecksWithoutTeamCommandAreReportedAsBaseline(t *t
 		t.Fatalf("passing local checks misreported:\n%s", joined)
 	}
 }
+
+// The operator contract is argv, not shell interpolation: even command strings
+// containing metacharacters must arrive byte-for-byte as a single argument.
+func TestConfiguredChecks_TestWrapperReceivesOpaqueCommandAndKeepsAdditionalChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture is a POSIX executable script")
+	}
+	t.Setenv("NM_WRAPPER_TEST_INHERITED", "daemon value")
+	for _, exit := range []int{0, 7} {
+		t.Run(strconv.Itoa(exit), func(t *testing.T) {
+			wrapper := filepath.Join(t.TempDir(), "operator's wrapper with spaces")
+			script := "#!/bin/sh\nprintf '%s' \"$#\" > argc\nprintf '%s' \"$1\" > argument\nprintf '%s' \"$PWD\" > cwd\nprintf '%s' \"$NM_WRAPPER_TEST_INHERITED/$NM_WRAPPER_TEST_STEP\" > environment\necho wrapper >> order\necho wrapper-stdout\necho wrapper-stderr >&2\nexit " + strconv.Itoa(exit) + "\n"
+			if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			command := "  printf '%s' \"team command\"; touch must-not-run; $(touch must-not-expand)\n'quoted' \\ \"double\"  "
+			sctx := commandOverrideContext(t, config.CommandOverride{Wrapper: &wrapper, Additional: []string{"echo additional >> order; echo additional-stdout"}})
+			sctx.Env = []string{"NM_WRAPPER_TEST_STEP=step value"}
+			out, results, err := runConfiguredChecks(sctx, "test", command)
+			if err != nil || len(results) != 2 || results[0].Local || results[0].Command != command || results[0].ExitCode != exit || !results[1].Local || results[1].ExitCode != 0 {
+				t.Fatalf("wrapper/additional results = %+v, %v", results, err)
+			}
+			if results[0].Output != "wrapper-stdout\nwrapper-stderr\n" || !strings.Contains(out, results[0].Output) || !strings.Contains(out, "additional-stdout") {
+				t.Fatalf("wrapper stdout/stderr lost from evidence: %q, %+v", out, results)
+			}
+			for name, want := range map[string]string{"argc": "1", "argument": command, "cwd": sctx.WorkDir, "environment": "daemon value/step value", "order": "wrapper\nadditional\n"} {
+				data, err := os.ReadFile(filepath.Join(sctx.WorkDir, name))
+				if err != nil || string(data) != want {
+					t.Errorf("%s = %q, %v; want %q", name, data, err, want)
+				}
+			}
+			for _, name := range []string{"must-not-run", "must-not-expand"} {
+				if _, err := os.Stat(filepath.Join(sctx.WorkDir, name)); !os.IsNotExist(err) {
+					t.Errorf("command was executed or expanded locally: %s, %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestTestStep_TestWrapperStatusControlsConfiguredCommandResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture is a POSIX executable script")
+	}
+	t.Parallel()
+	for _, exit := range []int{0, 7} {
+		t.Run(strconv.Itoa(exit), func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			wrapper := filepath.Join(t.TempDir(), "wrapper")
+			if err := os.WriteFile(wrapper, []byte("#!/bin/sh\necho wrapper-evidence\nexit "+strconv.Itoa(exit)+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
+			}}
+			// The configured command deliberately has the opposite result, so
+			// accidentally running it instead of the wrapper fails this test.
+			command := "exit 0"
+			if exit == 0 {
+				command = "exit 19"
+			}
+			sctx := newTestContext(t, ag, dir, base, head, config.Commands{Test: command})
+			sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Wrapper: &wrapper}}
+			var logs []string
+			sctx.Log = func(s string) { logs = append(logs, s) }
+			outcome, err := (&TestStep{}).Execute(sctx)
+			if err != nil || outcome.ExitCode != exit || outcome.NeedsApproval != (exit != 0) || len(ag.calls) != 1 {
+				t.Fatalf("Test did not use wrapper result and unconditional evidence: %+v, %v", outcome, err)
+			}
+			if !strings.Contains(strings.Join(logs, "\n"), "wrapper-evidence") || !strings.Contains(ag.calls[0].Prompt, "wrapper ") {
+				t.Fatalf("wrapper output/declaration absent from step evidence: %s", ag.calls[0].Prompt)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exit != 0 && (len(findings.Items) == 0 || findings.Items[0].Category != types.FindingCategoryTestCommand || findings.Items[0].Description != "configured test command failed with exit code 7") {
+				t.Fatalf("wrapper failure lost configured-command gating: %+v", findings)
+			}
+		})
+	}
+}
+
+func TestRepositoryCommand_TestWrapperInheritsNice(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("nice is a POSIX scheduling knob")
+	}
+	t.Parallel()
+	sctx := commandOverrideContext(t, config.CommandOverride{})
+	base, code, err := runRepositoryCommand(sctx, "test", "ps -o nice= -p $$")
+	if err != nil || code != 0 {
+		t.Fatalf("baseline niceness: %q, %d, %v", base, code, err)
+	}
+	baseNice, err := strconv.Atoi(strings.TrimSpace(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nps -o nice= -p $$\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Config.CommandOverrides["test"] = config.CommandOverride{Wrapper: &wrapper, Nice: 1}
+	out, code, err := runRepositoryCommand(sctx, "test", "exit 99")
+	if err != nil || code != 0 || strings.TrimSpace(out) != strconv.Itoa(min(baseNice+1, 19)) {
+		t.Fatalf("wrapper niceness: %q, %d, %v; baseline %d", out, code, err, baseNice)
+	}
+}
+
+func TestRepositoryCommand_TestWrapperAppliesOnBaseCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture is a POSIX executable script")
+	}
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	wrapper := filepath.Join(t.TempDir(), "wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '%s\\n' \"$1\"\ngit rev-parse HEAD\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContext(t, nil, dir, base, head, config.Commands{})
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Wrapper: &wrapper, Additional: []string{"exit 99"}}}
+	out, code, err := runTestCommandOnBase(sctx, "exit 0", base)
+	if err != nil || code != 7 || out != "exit 0\n"+base+"\n" {
+		t.Fatalf("base checkout did not use the wrapper: %q, %d, %v", out, code, err)
+	}
+}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -61,6 +63,15 @@ func TestCommandOverrides_RejectWeakeningAndMalformedExecutionSettings(t *testin
 		"test: {additional: ['   ']}",
 		"test: {additional: [\"echo\\0bad\"]}",
 		"test: {env: {PATH: /opt/other/bin}}",
+		"test: {unknown: true}",
+		"test: {wrapper: ''}",
+		"test: {wrapper: 'relative/wrapper'}",
+		"test: {wrapper: '~/wrapper'}",
+		"test: {wrapper: [invalid]}",
+		"test: {wrapper: \"/absolute/with\\0nul\"}",
+		"lint: {wrapper: '/opt/wrapper'}",
+		"prepare: {wrapper: '/opt/wrapper'}",
+		"format: {wrapper: '/opt/wrapper'}",
 	} {
 		t.Run(value, func(t *testing.T) {
 			_, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  https://github.com/acme/widget:\n    commands:\n      " + value + "\n"))
@@ -104,5 +115,36 @@ repository_overrides:
 	cfg := MergeForRemote(DefaultGlobalConfig(), EffectiveRepoConfig(pushed, trusted, false), "https://github.com/acme/widget")
 	if len(cfg.CommandOverrides) != 0 || cfg.Commands != trusted.Commands {
 		t.Fatalf("pushed branch supplied local execution settings: %+v", cfg)
+	}
+}
+
+func TestCommandOverrides_TestWrapperIsMachineLocalAndKeepsTheCommand(t *testing.T) {
+	wrapper, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf("repository_overrides:\n  https://github.com/acme/widget:\n    commands:\n      test: {wrapper: %q, additional: ['extra-check']}\n", wrapper)
+	global, err := LoadGlobalFromBytes([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := &RepoConfig{Commands: Commands{Test: "  exact team-test 'argument'  "}}
+	cfg := MergeForRemote(global, trusted, "https://github.com/acme/widget.git")
+	if cfg.Commands != trusted.Commands || cfg.CommandOverrides["test"].Wrapper == nil || *cfg.CommandOverrides["test"].Wrapper != wrapper {
+		t.Fatalf("wrapper changed the trusted command or was lost: %+v", cfg)
+	}
+	*cfg.CommandOverrides["test"].Wrapper = "mutated"
+	again := MergeForRemote(global, trusted, "https://github.com/acme/widget.git")
+	if *again.CommandOverrides["test"].Wrapper != wrapper {
+		t.Fatal("effective wrapper aliases global configuration")
+	}
+	if got := MergeForRemote(global, trusted, "https://github.com/acme/other"); len(got.CommandOverrides) != 0 {
+		t.Fatal("wrapper escaped the matching repository")
+	}
+	if _, err := LoadRepoFromBytes([]byte(data)); err == nil || !strings.Contains(err.Error(), "global-only") {
+		t.Fatalf("repository config must refuse wrapper: %v", err)
+	}
+	if _, err := LoadRepoFromBytes([]byte("commands:\n  test: {wrapper: " + fmt.Sprintf("%q", wrapper) + "}\n")); err == nil {
+		t.Fatal("repository commands.test accepted a wrapper mapping")
 	}
 }

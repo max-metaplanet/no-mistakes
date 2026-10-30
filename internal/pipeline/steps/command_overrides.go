@@ -2,10 +2,13 @@ package steps
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
@@ -28,13 +31,27 @@ func declareStepCommandOverrides(sctx *pipeline.StepContext, name string) {
 }
 
 func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
-	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, sctx.Config.CommandOverrides[name].Nice)
+	override := sctx.Config.CommandOverrides[name]
+	if name == "test" && override.Wrapper != nil {
+		// Pass the configured string as one argv entry, never as shell source.
+		cmd := exec.CommandContext(sctx.Ctx, *override.Wrapper, command)
+		if runtime.GOOS != "windows" {
+			// Preserve the configured shell's OOM preference before exec'ing the
+			// wrapper. Positional arguments keep both strings opaque to the shell.
+			cmd = exec.CommandContext(sctx.Ctx, "sh", "-c", shellenv.OwnOOMScoreScript(`exec "$@"`), "no-mistakes-test-wrapper", *override.Wrapper, command)
+		}
+		return runCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmd, command, override.Nice)
+	}
+	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, override.Nice)
 }
 
 // commandOverrideDeclaration states every machine-local override applied to a
 // command so a result produced under one is never presented as a plain run.
 func commandOverrideDeclaration(name string, override config.CommandOverride) string {
 	var parts []string
+	if name == "test" && override.Wrapper != nil {
+		parts = append(parts, fmt.Sprintf("wrapper %q", *override.Wrapper))
+	}
 	if override.Nice != 0 {
 		parts = append(parts, fmt.Sprintf("nice %d", override.Nice))
 	}
@@ -99,7 +116,15 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		} else if len(override.Additional) > 0 {
 			fmt.Fprintf(&output, "\nconfigured %s command: %s\n", name, checks[i].Command)
 		}
-		out, code, err := executeRepositoryCommand(sctx, name, checks[i].Command)
+		var out string
+		var code int
+		var err error
+		if checks[i].Local {
+			// Additional checks keep their own shells and are never wrapped.
+			out, code, err = runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), checks[i].Command, override.Nice)
+		} else {
+			out, code, err = executeRepositoryCommand(sctx, name, checks[i].Command)
+		}
 		output.WriteString(out)
 		if err != nil {
 			return output.String(), checks[:i], err

@@ -1280,7 +1280,7 @@ Eval replay cases store no remote URL, so a replay does not apply a matching ent
 
 #### Machine-local commands
 
-A matching `commands` block supplements the repository's trusted commands; it never changes their strings or removes them.
+A matching `commands` block adds machine-local execution settings to the repository's trusted commands. The Test command can be delegated to an operator-installed wrapper; its configured command string remains unchanged.
 Repository command selection still comes from the trusted default branch, or the pushed branch only with trusted `allow_repo_commands: true`.
 Only the operator's global config can supply these local settings, never a repository's `.no-mistakes.yaml`.
 With no matching command override, execution remains unchanged.
@@ -1290,6 +1290,7 @@ repository_overrides:
   https://github.com/acme/widget.git:
     commands:
       test:
+        wrapper: /opt/local-checks/widget-test-wrapper
         additional:
           - /opt/local-checks/widget-smoke
         nice: 10
@@ -1302,10 +1303,14 @@ repository_overrides:
 
 | Field | Supported commands | Meaning |
 | --- | --- | --- |
+| `wrapper` | `test` only | Absolute executable path; receives the unchanged configured Test command as one argument instead of running it directly |
 | `additional` | `test`, `lint` | Ordered list of separate shell checks added after the repository check; every check must succeed |
 | `nice` | `prepare`, `test`, `lint`, `format` | POSIX niceness adjustment from `0` to `19`; `0` leaves scheduling unchanged |
 
-Test runs the committed command first, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
+Test runs the configured command first, through `wrapper` when set, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
+The wrapper runs as `<wrapper> <configured test command string>` in the same working directory and environment as the original command, with the entire command string passed as **one argument** without shell expansion. Its exit status and combined stdout/stderr become the configured Test result and evidence. A wrapper may run the command remotely or wrap local execution; no-mistakes does not also execute that command itself.
+`nice` also applies to the wrapper process. Additional checks run afterwards unchanged and are never wrapped, including when the wrapper fails. A wrapper is invoked only when a configured Test command exists, including an opted-in base-attribution rerun.
+Empty or relative wrapper paths (including `~/...`) are configuration errors; missing or non-executable wrappers fail execution. `wrapper` is refused for every command other than Test and in repository config.
 Test still performs its unconditional agent-driven end-user scenarios afterwards.
 Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
 An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
@@ -1313,7 +1318,7 @@ Its finding names that machine-local check and its exit code, and never attribut
 `additional` is refused for preparation and formatting, because those commands are not independent check gates.
 Replacement command strings, `command`, `replace`, `skip`, per-command `env`, unknown command names, empty additional checks, and niceness outside `0` through `19` are configuration errors.
 
-Overrides are always declared, never silent: whenever a command runs under any of these settings, its step log states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, once per step rather than per check, and Test passes the same declaration to its agent for the testing summary.
+Overrides are always declared, never silent: whenever a command runs under any of these settings, its step log states `machine-local overrides applied to commands.<name>:` followed by the wrapper path, niceness, and added checks that apply, once per step rather than per check, and Test passes the same declaration to its agent for the testing summary.
 These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
 
 There is no per-command environment override.
@@ -1323,7 +1328,7 @@ Toolchain paths (such as `PATH`) and parallelism settings (such as `GOMAXPROCS`)
 Positive niceness is refused on Windows; set resource limits in the operator's own environment there.
 A missing `nice` utility fails the command rather than silently ignoring the request.
 
-Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, niceness, trusted-config SHA, and tool build.
+Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, wrapper path, added checks, niceness, trusted-config SHA, and tool build.
 It also records the values configured commands inherit from the daemon's environment for `PATH`, `GOMAXPROCS`, `MAKEFLAGS`, `CARGO_BUILD_JOBS`, and `CMAKE_BUILD_PARALLEL_LEVEL`, omitting any that are unset; these values appear only in this file, never in step logs, agent prompts, findings, or the PR.
 This record is independent of optional eval capture.
 Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
