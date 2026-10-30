@@ -188,7 +188,10 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 			return "", 0, fmt.Errorf("clean base preparation changes: %w", err)
 		}
 	}
-	output, exitCode, err := runShellCommandWithPriority(ctx, checkout, env, testCmd, sctx.Config.CommandOverrides["test"].Nice)
+	baseContext := *sctx
+	baseContext.Ctx = ctx
+	baseContext.WorkDir = checkout
+	output, exitCode, err := executeRepositoryCommand(&baseContext, "test", testCmd)
 	if err := exceeded(); err != nil {
 		return "", 0, err
 	}

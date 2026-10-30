@@ -2,14 +2,16 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
 
-// CommandOverride adds machine-local checks and lowers scheduling priority,
-// never changing the repository's command string or its environment.
+// CommandOverride adds machine-local checks, lowers scheduling priority, and
+// optionally wraps Test without changing its command string or environment.
 // Additional checks have separate exit statuses.
 type CommandOverride struct {
+	Wrapper    *string  `yaml:"wrapper" json:"wrapper,omitempty"`
 	Nice       int      `yaml:"nice" json:"nice,omitempty"`
 	Additional []string `yaml:"additional" json:"additional,omitempty"`
 }
@@ -24,6 +26,14 @@ func validateCommandOverrides(overrides map[string]CommandOverride) error {
 			}
 		default:
 			return fmt.Errorf("unknown command %q (want prepare, test, lint, or format)", name)
+		}
+		if override.Wrapper != nil {
+			if name != "test" {
+				return fmt.Errorf("commands.%s.wrapper is only supported for test", name)
+			}
+			if !filepath.IsAbs(*override.Wrapper) || strings.ContainsRune(*override.Wrapper, '\x00') {
+				return fmt.Errorf("commands.test.wrapper must be a nonempty absolute executable path without NUL")
+			}
 		}
 		if override.Nice < 0 || override.Nice > 19 {
 			return fmt.Errorf("commands.%s.nice must be between 0 and 19", name)
@@ -46,6 +56,10 @@ func copyCommandOverrides(overrides map[string]CommandOverride) map[string]Comma
 	}
 	result := make(map[string]CommandOverride, len(overrides))
 	for name, override := range overrides {
+		if override.Wrapper != nil {
+			wrapper := *override.Wrapper
+			override.Wrapper = &wrapper
+		}
 		override.Additional = append([]string(nil), override.Additional...)
 		result[name] = override
 	}

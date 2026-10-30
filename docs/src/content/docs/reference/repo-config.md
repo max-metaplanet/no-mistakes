@@ -368,7 +368,7 @@ Like every `commands.*` value, `commands.prepare` comes from the trusted default
 
 ### commands.test
 
-Explicit **targeted** local test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
+Explicit **targeted** test command. By default, run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
 | --- | --- |
@@ -379,8 +379,8 @@ Explicit **targeted** local test command. Run via the platform shell - `sh -c` o
 Broad regression belongs in remote CI and remains mandatory before a PR is ready; do not put a complete-suite walk here just to mirror CI.
 no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
-When set, the test step runs this exact command first as the baseline and checks the exit code.
-Machine-local [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands) can add checks and lower its scheduling priority without replacing this command.
+When set, the test step runs the configured baseline first and checks its exit code.
+For machine-local execution settings, including delegation to an operator-installed Test wrapper, see [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands).
 Whether the baseline passes, fails, or is absent, the agent then derives targeted end-user scenarios and drives the product itself under the same targeted-validation contract.
 A non-zero exit parks the Test step. Approving that gate records an explicit override on the step and on the PR attestation; the [`require-no-mistakes`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) check treats that as non-compliant unless [`test.allow_approve_over_failure`](#testallow_approve_over_failure) is set.
 
@@ -1063,7 +1063,7 @@ test:
   base_attribution: true
 ```
 
-When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured (its output is logged as `Prepare (base)`, and its tracked and ordinary untracked changes are reset before the base suite runs, exactly as on the head, so only ignored materialization survives), and logs its output to the Test step log as `Test (base)`. Base preparation and the base command share one deadline, the Test budget [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) (default 30 minutes); a base run that outlives it is stopped and reported as unavailable while the head's failure still parks. Both base commands keep the machine-local [`nice`](/no-mistakes/reference/global-config/#machine-local-commands) settings for `prepare` and `test`. Only the repository command's own output is attributed: machine-local `additional` test checks are never re-run on the base, and a failure in one of them alone triggers no base run.
+When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured (its output is logged as `Prepare (base)`, and its tracked and ordinary untracked changes are reset before the base suite runs, exactly as on the head, so only ignored materialization survives), and logs its output to the Test step log as `Test (base)`. Base preparation and the base command share one deadline, the Test budget [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) (default 30 minutes); a base run that outlives it is stopped and reported as unavailable while the head's failure still parks. The base commands retain the applicable [machine-local execution settings](/no-mistakes/reference/global-config/#machine-local-commands). Only the repository command's own output is attributed: machine-local `additional` test checks are never re-run on the base, and a failure in one of them alone triggers no base run.
 
 The attribution leads the Test findings summary (the failure output the PR and repair turns see) and is passed to the evidence agent:
 

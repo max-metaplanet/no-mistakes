@@ -320,6 +320,12 @@ func runShellCommandWithPriority(ctx context.Context, dir string, env []string, 
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", shellenv.OwnOOMScoreScript(cmdStr))
 	}
+	return runCommandWithPriority(ctx, dir, env, cmd, cmdStr, nice)
+}
+
+// runCommandWithPriority shares scheduling, lifecycle and result handling between
+// configured shells and the machine-local Test wrapper.
+func runCommandWithPriority(ctx context.Context, dir string, env []string, cmd *exec.Cmd, description string, nice int) (string, int, error) {
 	if nice != 0 {
 		if nice < 0 || nice > 19 || runtime.GOOS == "windows" {
 			return "", -1, fmt.Errorf("unsupported command niceness %d on %s", nice, runtime.GOOS)
@@ -340,7 +346,7 @@ func runShellCommandWithPriority(ctx context.Context, dir string, env []string, 
 		if ee, ok := err.(*exec.ExitError); ok {
 			return string(out), ee.ExitCode(), nil
 		}
-		return string(out), -1, fmt.Errorf("run command %q: %w", cmdStr, err)
+		return string(out), -1, fmt.Errorf("run command %q: %w", description, err)
 	}
 	return string(out), 0, nil
 }

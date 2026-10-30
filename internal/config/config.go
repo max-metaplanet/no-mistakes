@@ -3016,10 +3016,22 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	// keys, so the key is probed by name and refused here - the same shape
 	// LoadGlobalFromBytes uses to refuse the repository-only auto_fix.gates.
 	var globalOnly struct {
-		QuotaRouting yaml.Node `yaml:"quota_routing"`
+		QuotaRouting        yaml.Node `yaml:"quota_routing"`
+		RepositoryOverrides map[string]struct {
+			Commands map[string]struct {
+				Wrapper yaml.Node `yaml:"wrapper"`
+			} `yaml:"commands"`
+		} `yaml:"repository_overrides"`
 	}
 	if err := yaml.Unmarshal(data, &globalOnly); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	for _, override := range globalOnly.RepositoryOverrides {
+		for _, command := range override.Commands {
+			if !command.Wrapper.IsZero() {
+				return nil, fmt.Errorf("repository_overrides commands.wrapper is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
+			}
+		}
 	}
 	if !globalOnly.QuotaRouting.IsZero() {
 		return nil, fmt.Errorf("quota_routing is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
