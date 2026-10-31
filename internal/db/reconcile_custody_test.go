@@ -80,3 +80,60 @@ func reconciliationDBFixture(t *testing.T) (*DB, *Repo, *Run) {
 	}
 	return d, repo, run
 }
+
+// TestReconcileCustodyReleasesAnUnverifiedTerminalHead covers issue #1523's
+// stranded run whose recorded head was never verified and is no Git object
+// anywhere: it must still be releasable, and a stamp that lands after the
+// observation must still refuse.
+func TestReconcileCustodyReleasesAnUnverifiedTerminalHead(t *testing.T) {
+	for _, stamped := range []bool{false, true} {
+		d, repo, run := unverifiedReconciliationDBFixture(t)
+		if stamped {
+			if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, "pipeline"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		called := false
+		err := d.ReconcileCustody(run, repo, 1, func() error { called = true; return nil })
+		stored, readErr := d.GetRun(run.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if stamped {
+			if err == nil || called || stored.CustodyReturnedAt != nil {
+				t.Fatalf("a stamp after the observation was accepted: called=%v, err=%v", called, err)
+			}
+			continue
+		}
+		if err != nil || !called || stored.CustodyReturnedAt == nil {
+			t.Fatalf("unverified terminal head was not released: called=%v, err=%v, run=%#v", called, err, stored)
+		}
+	}
+}
+
+func unverifiedReconciliationDBFixture(t *testing.T) (*DB, *Repo, *Run) {
+	t.Helper()
+	d := openTestDB(t)
+	repo, err := d.InsertRepo(filepath.Join(t.TempDir(), "work"), "https://example.invalid/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "topic", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/topic"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "pipeline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, repo, run
+}

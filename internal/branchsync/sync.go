@@ -2246,6 +2246,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			state.Safety = "blocked_recover_manual_reconciliation"
 			state.Error = "a stranded run has missing, unverified, or conflicting recovery evidence; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			s.offerReconciliation(ctx, state, run)
 			return
 		}
 		source := s.recoverySourceAvailable(ctx, state, run)

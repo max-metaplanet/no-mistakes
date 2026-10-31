@@ -5,6 +5,12 @@ import "fmt"
 // ReconcileCustody fences an explicit terminal recovery against run creation,
 // publication and configuration changes while apply moves the Git refs. apply
 // must not call back into DB. A failed apply leaves custody outstanding.
+//
+// terminal_head_verified_at is compared exactly, including NULL: an
+// unverified terminal head is reconcilable, because the only caller that
+// reaches here with NULL has proved the recorded head is no Git object in
+// either repository (issue #1523), and a run that gains a stamp after the
+// observation no longer matches.
 func (d *DB) ReconcileCustody(run *Run, repo *Repo, branchRuns int, apply func() error) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -17,7 +23,7 @@ func (d *DB) ReconcileCustody(run *Run, repo *Repo, branchRuns int, apply func()
 		AND head_sha = ? AND submitted_head_sha IS ? AND last_pushed_sha IS ?
 		AND push_generation IS ? AND push_target_kind IS ?
 		AND push_target_fingerprint IS ? AND push_ref IS ?
-		AND terminal_head_verified_at IS ? AND terminal_head_verified_at IS NOT NULL
+		AND terminal_head_verified_at IS ?
 		AND custody_returned_at IS NULL AND push_active = 0
 		AND NOT EXISTS (SELECT 1 FROM recovery_archives WHERE owner_run_id = runs.id)
 		AND EXISTS (SELECT 1 FROM repos WHERE id = ? AND upstream_url = ? AND fork_url IS ? AND working_path = ?)
