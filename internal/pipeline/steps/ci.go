@@ -462,7 +462,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				}
 				return ciIncompleteRepairOutcome(targets.Findings, sctx.DeferredFindings, targets.description(), s.repairIncomplete), nil
 			}
-			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: sctx.DeferredFindings}, nil
+			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: withoutCIIncompleteRepairFindingsJSON(sctx.DeferredFindings)}, nil
 		}
 	}
 

@@ -136,6 +136,7 @@ func TestCIStep_IncompleteVerdictSurvivesAProtectedPathRefusal(t *testing.T) {
 			conclusion:    `{"summary":"repair the failing check","code_change_needed":true,"repair_complete":true}`,
 			wantPublished: true,
 		},
+
 		{
 			name:          "an_incomplete_repair_parks_after_the_retry",
 			conclusion:    `{"summary":"` + incompleteReason + `","code_change_needed":true,"repair_complete":false}`,
@@ -206,6 +207,62 @@ func TestCIStep_IncompleteVerdictSurvivesAProtectedPathRefusal(t *testing.T) {
 			parked, carried := ciCarriedIncompleteRepair(outcome.Findings)
 			if !carried || parked.Action != types.ActionAskUser || !strings.Contains(parked.Description, incompleteReason) {
 				t.Fatalf("findings = %s, want the ask-user incomplete-repair finding with the agent's reason", outcome.Findings)
+			}
+		})
+	}
+}
+
+// TestCIStep_AnEarlierRoundsIncompleteVerdictIsNotCarried: a ci-repair-incomplete
+// finding left unselected at an earlier gate comes back as a deferred finding.
+// A later round whose agent reported its repair complete must not forward it,
+// or the protected-path retry would read it back as this round's verdict and
+// hold a finished repair, and a revalidation restart would park on it.
+func TestCIStep_AnEarlierRoundsIncompleteVerdictIsNotCarried(t *testing.T) {
+	t.Parallel()
+	const stale = `{"findings":[{"id":"ci-repair-incomplete","severity":"warning","description":"an earlier round's agent called its repair unfinished","action":"ask-user"},{"id":"ci-other","severity":"warning","description":"an unrelated deferred finding","action":"ask-user"}]}`
+	for _, tc := range []struct {
+		name       string
+		revalidate bool
+		protected  bool
+	}{
+		{name: "protected_path_refusal", protected: true},
+		{name: "revalidation_restart", revalidate: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCIRepairFixture(t, tc.revalidate, nil)
+			f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				for file, content := range map[string]string{"package.lock": "refused\n", "fix.go": "repair\n"} {
+					if err := os.WriteFile(filepath.Join(opts.CWD, file), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"repair the failing check","code_change_needed":true,"repair_complete":true}`)}, nil
+			}}
+			if tc.protected {
+				f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+			}
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"the test check failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+			f.sctx.DeferredFindings = stale
+			host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}}
+
+			outcome, err := (&CIStep{}).repairFromFindings(f.sctx, host, &scm.PR{Number: "42"})
+			if err != nil || outcome == nil {
+				t.Fatalf("outcome = %+v, err = %v\n%s", outcome, err, f.log())
+			}
+			if tc.protected != pipeline.HasProtectedPathRefusal(outcome.Findings) {
+				t.Fatalf("protected-path refusal = %v, want %v:\n%s", !tc.protected, tc.protected, outcome.Findings)
+			}
+			if tc.revalidate && outcome.RestartFrom == "" {
+				t.Fatalf("outcome = %+v, want a revalidation restart", outcome)
+			}
+			if _, carried := ciCarriedIncompleteRepair(outcome.Findings); carried {
+				t.Fatalf("an earlier round's incomplete verdict was carried into this round:\n%s", outcome.Findings)
+			}
+			if !strings.Contains(outcome.Findings, "ci-other") {
+				t.Fatalf("the unrelated deferred finding was dropped:\n%s", outcome.Findings)
 			}
 		})
 	}

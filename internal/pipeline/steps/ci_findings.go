@@ -590,6 +590,28 @@ func ciCarriedIncompleteRepair(findingsJSON string) (Finding, bool) {
 	return Finding{}, false
 }
 
+// withoutCIIncompleteRepairFindingsJSON drops an earlier round's
+// incomplete-repair finding from findings this round only forwards, because
+// only the current execution's verdict may produce one.
+func withoutCIIncompleteRepairFindingsJSON(raw string) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	kept := findings.Items[:0:0]
+	for _, item := range findings.Items {
+		if item.ID != ciRepairIncompleteFindingID {
+			kept = append(kept, item)
+		}
+	}
+	if len(kept) == len(findings.Items) {
+		return raw
+	}
+	findings.Items = kept
+	encoded, _ := types.MarshalFindingsJSON(findings)
+	return encoded
+}
+
 // withCIIncompleteRepairFinding adds the incomplete-repair finding to a
 // protected-path refusal, so approving the protected path neither hides nor
 // clears the agent's verdict.
@@ -651,7 +673,7 @@ func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, d
 		seenItems[item] = true
 	}
 	appendFinding := func(item Finding) {
-		if item.ID != "" && seenIDs[item.ID] || seenItems[item] {
+		if item.ID == ciRepairIncompleteFindingID || item.ID != "" && seenIDs[item.ID] || seenItems[item] {
 			return
 		}
 		parked.Items = append(parked.Items, item)

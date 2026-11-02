@@ -163,7 +163,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			// the restart, while an empty or informational set proceeds.
 			return &pipeline.StepOutcome{
 				RestartFrom: repair.restartFrom(),
-				Findings:    sctx.DeferredFindings,
+				Findings:    withoutCIIncompleteRepairFindingsJSON(sctx.DeferredFindings),
 			}, nil
 		}
 		// The repair was published, so the monitor stays on this run and
