@@ -66,7 +66,7 @@ type CIStep struct {
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
-	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
+	pendingFixSummary    string                    // one-line summary of the repair this execution produced, attached to the outcome it ends with
 	pendingRepairPublish bool
 	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
 	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
@@ -81,6 +81,12 @@ type CIStep struct {
 	// set only for the duration of that repair's recording. recordRepair
 	// proves a pure replay against exactly this commit and nothing else.
 	replayBase string
+	// repairIncomplete is the reason an in-flight repair's own agent gave for
+	// reporting it unfinished, set only for the duration of that repair's
+	// recording, like replayBase. recordRepair sits deep under commitRepair,
+	// and this is the one fact about the agent's conclusion that its
+	// publish-or-hold decision needs.
+	repairIncomplete string
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.

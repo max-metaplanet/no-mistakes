@@ -36,12 +36,26 @@ const ciFixerClassRules = `- Before changing code, state for each finding the in
 - Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
 - After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.`
 
+// ciRepairCompletenessRule teaches every CI-repair path to report whether its
+// repair actually finished, because the daemon has no other way to know. A
+// repair agent that resolves a merge, renames a migration, and then cannot run
+// the snapshot restore, the guards, the type-check or the tests still leaves a
+// committed head behind, and publishing that head starts CI - and every
+// consumer of the pull request - on work its own author said was not ready.
+// That is run 01M6D2GZFJWF6RWN0AT4JWTNMX on metaplanet-jp/core#2914, whose
+// agent said exactly that in prose the daemon never read.
+//
+// code_change_needed cannot carry it: true already means "this check needs a
+// code fix", which is equally true of a finished repair and an abandoned one.
+const ciRepairCompletenessRule = `- Report in repair_complete whether this repair is finished. Set it to true only when everything the repair needed is done and the result is safe to publish. Set it to false when any part of it is left over - verification you planned but could not run, a step you deferred, a change you could not complete - and say in summary what is still outstanding. Reporting false keeps your commit and stops the pipeline publishing it; it does not discard your work, and it is the only way to say that this head must not be published yet.`
+
 const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code (a broken test, build, lint, or similar defect in the change), you MUST produce file changes that fix it and set code_change_needed to true. A real failing test or build must still be fixed.
 		- If a failing check is not caused by the code under review (a stale or superseded check run, an infrastructure or attestation check such as "PR must be raised via no-mistakes" that fails only because a later pipeline push moved the head, or any failure external to the code), you MAY conclude that no code change is warranted. Set code_change_needed to false and report that conclusion in summary instead of editing files. Do not invent work to satisfy a check the code did not cause.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
 ` + ciFixerClassRules + `
+		` + ciRepairCompletenessRule + `
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
@@ -49,6 +63,7 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
+		` + ciRepairCompletenessRule + `
 		- Verify the rebase completes cleanly before finishing.`
 
 // repairFromFindings runs one CI fix round over the findings the executor
@@ -59,14 +74,15 @@ const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the m
 //
 // It returns a non-nil outcome when the round ends this execution: a
 // protected-path refusal, a fix agent that burned its whole invocation
-// budget, a repair whose attestation could not be settled, a repair that must
-// revalidate from Review, or the agent's conclusion that no code change is
-// warranted - the last two of those park the selected findings as ask-user,
-// because a question the agent has already declined to answer with code is a
-// human's to answer. A nil outcome means monitoring resumes: either the
-// repair was published and the provider must re-run the checks against it,
-// or the agent produced nothing and the next settled observation re-emits
-// the same findings so the executor can retry while auto_fix.ci allows.
+// budget, a repair whose attestation could not be settled, a repair the agent
+// reported unfinished, a repair that must revalidate from Review, or the
+// agent's conclusion that no code change is warranted - all but the
+// revalidation park the selected findings as ask-user, because a question the
+// agent has already declined to answer with code is a human's to answer. A
+// nil outcome means monitoring resumes: either the repair was published and
+// the provider must re-run the checks against it, or the agent produced
+// nothing and the next settled observation re-emits the same findings so the
+// executor can retry while auto_fix.ci allows.
 func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (*pipeline.StepOutcome, error) {
 	targets, err := parseCIFixTargets(sctx.PreviousFindings)
 	if err != nil {
@@ -126,6 +142,13 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		return nil, nil
 	}
 	if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
+		if repair.IncompleteReason != "" {
+			// Nothing was published, so none of the published-repair
+			// bookkeeping applies: no fixed-check key to suppress the next
+			// poll's escalation, and no RepairPublished evidence on the round.
+			s.pendingFixSummary = repair.Summary
+			return ciIncompleteRepairOutcome(targets.Findings, sctx.DeferredFindings, issueDesc, repair.IncompleteReason, sctx.Run.HeadSHA), nil
+		}
 		s.lastFixedChecks = fixKey
 		s.lastFixedCompletedAt = fixCompletedAt
 		s.pendingFixSummary = repair.Summary
@@ -287,6 +310,12 @@ CI logs:
 		s.replayBase = rebaseBaseSHA
 		defer func() { s.replayBase = "" }()
 	}
+	// Bound before commitRepair, because the publish-or-hold decision happens
+	// deep under it, in recordRepair. Rebase repairs are not carved out the way
+	// code_change_needed is: the repair that proved this necessary was a merge
+	// conflict resolution.
+	s.repairIncomplete = incompleteRepairReason(conclusion)
+	defer func() { s.repairIncomplete = "" }()
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	var refusal *pipeline.ProtectedPathError
 	if errors.As(err, &refusal) {
@@ -432,16 +461,40 @@ func boundedCILogError(err error, maxBytes int) string {
 type ciFixConclusion struct {
 	Summary          string `json:"summary"`
 	CodeChangeNeeded *bool  `json:"code_change_needed"`
+	// RepairComplete is the agent's own verdict on whether its repair is
+	// finished and the head it produced may be published
+	// (ciRepairCompletenessRule). It is a pointer because an unreported
+	// verdict is not a "no": an agent whose adapter returned no structured
+	// output at all must keep publishing as it did before this field existed,
+	// or the one failure mode would be traded for a pipeline that parks every
+	// repair. Only an explicit false refuses publication.
+	RepairComplete *bool `json:"repair_complete"`
 }
 
 var ciFixConclusionSchema = json.RawMessage(fmt.Sprintf(`{
 	"type": "object",
 	"properties": {
 		"summary": {"type": "string", "maxLength": %d},
-		"code_change_needed": {"type": "boolean"}
+		"code_change_needed": {"type": "boolean"},
+		"repair_complete": {"type": "boolean"}
 	},
-	"required": ["summary", "code_change_needed"]
+	"required": ["summary", "code_change_needed", "repair_complete"]
 }`, config.MaxFixMessageSummaryBytes))
+
+// incompleteRepairReason returns why this repair must not be published, or ""
+// when the agent reported it finished or reported nothing at all. A reported
+// incompleteness with no reason still refuses - the reason is what the gate
+// shows an operator, and an agent that declines to give one has not made its
+// repair any safer to publish.
+func incompleteRepairReason(conclusion ciFixConclusion) string {
+	if conclusion.RepairComplete == nil || *conclusion.RepairComplete {
+		return ""
+	}
+	if summary := strings.TrimSpace(conclusion.Summary); summary != "" {
+		return summary
+	}
+	return "the agent reported the repair incomplete without saying what is outstanding"
+}
 
 func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 	summary, err := extractCommitSummary(result)
@@ -578,6 +631,11 @@ type ciRepairResult struct {
 	ReviewCarried      bool
 	NoCodeChangeNeeded bool
 	Summary            string
+	// IncompleteReason is the agent's own reason for reporting its repair
+	// unfinished. Non-empty means the repair was recorded locally and nothing
+	// was published, and it outranks Revalidate: the run parks for a decision
+	// rather than restarting validation on a head the agent said is not ready.
+	IncompleteReason string
 }
 
 // restartFrom is the step a revalidating repair restarts validation at.
@@ -725,6 +783,22 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // the two paths differ in whether the repair is published now or held until
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	// One exception sits above that rule, and above ci.revalidate_repairs and
+	// the continuity proof alike: a repair its own agent reported unfinished
+	// never publishes. Continuity proves that the repaired head descends from
+	// the reviewed one, which says nothing about whether the repair is done;
+	// only the agent knows whether it ran the verification its repair needed.
+	// The commit is kept locally for custody and the monitor parks for a
+	// decision.
+	if s.repairIncomplete != "" {
+		sctx.Log(fmt.Sprintf("the repair agent reported this repair incomplete: %s; holding it locally instead of publishing", s.repairIncomplete))
+		repair, err := s.recordLocalRepair(sctx, headSHA)
+		if err != nil {
+			return repair, err
+		}
+		repair.IncompleteReason = s.repairIncomplete
+		return repair, nil
+	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}

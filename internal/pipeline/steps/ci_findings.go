@@ -557,6 +557,34 @@ func ciRepairParkOutcome(findings Findings, deferredRaw, summary string) *pipeli
 	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, findings, deferredRaw)
 }
 
+// ciIncompleteRepairOutcome parks the CI step after a repair agent reported
+// its own repair unfinished (ciRepairCompletenessRule).
+//
+// Its commit is already recorded locally for custody and was never pushed, so
+// the pull request still carries the head it had before the round. No further
+// round is spent automatically: the agent has reported what it could not
+// finish, and whether to spend another budget on it, finish it by hand, or
+// accept the red is the operator's call - the same bounded shape
+// ciFixAgentTimeoutOutcome uses when the agent runs out of budget before it
+// can report at all.
+func ciIncompleteRepairOutcome(selected Findings, deferredRaw, issueDesc, reason, headSHA string) *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "CI repair agent reported its repair incomplete",
+		Items: []Finding{{
+			ID:       "ci-repair-incomplete",
+			Severity: "warning",
+			Description: fmt.Sprintf(
+				"The CI repair agent reported its repair of %s incomplete and asked that the result not be published. Reported: %s. "+
+					"Its commit %s is recorded locally for custody and was not pushed, so the pull request still carries the head it had before this round and the findings listed with it are not cleared. "+
+					"Respond with a fix selection to spend another round finishing it, or take the repair over outside the pipeline.",
+				issueDesc, reason, shortObjectID(headSHA)),
+			Action: types.ActionAskUser,
+		}},
+	}
+	encoded, _ := types.MarshalFindingsJSON(findings)
+	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, selected, deferredRaw)
+}
+
 func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, deferredRaw string) *pipeline.StepOutcome {
 	parked, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil {
