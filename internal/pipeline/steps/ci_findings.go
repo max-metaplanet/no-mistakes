@@ -557,6 +557,108 @@ func ciRepairParkOutcome(findings Findings, deferredRaw, summary string) *pipeli
 	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, findings, deferredRaw)
 }
 
+const ciRepairIncompleteFindingID = "ci-repair-incomplete"
+
+// ciRepairIncompleteFinding is the ask-user finding that carries a repair
+// agent's own report that its repair is unfinished (ciRepairCompletenessRule).
+// It is also the durable record of that verdict: a protected-path refusal parks
+// it alongside the refusal, and the retry of that refusal reads it back
+// (ciCarriedIncompleteRepair), because the verdict on the step itself does not
+// outlive the execution that heard it.
+func ciRepairIncompleteFinding(issueDesc, reason string) Finding {
+	return Finding{
+		ID:       ciRepairIncompleteFindingID,
+		Severity: "warning",
+		Description: fmt.Sprintf(
+			"The CI repair agent reported its repair of %s incomplete and asked that the result not be published. Reported: %s. "+
+				"Nothing from this repair is published while this finding stands: its changes are kept locally for custody and never pushed, so the pull request still carries the head it had before this round and the findings listed with it are not cleared. "+
+				"Respond with a fix selection to spend another round finishing it, or take the repair over outside the pipeline.",
+			issueDesc, reason),
+		Action: types.ActionAskUser,
+	}
+}
+
+// ciCarriedIncompleteRepair returns the incomplete-repair finding a parked
+// gate carries, if any.
+func ciCarriedIncompleteRepair(findingsJSON string) (Finding, bool) {
+	findings, _ := types.ParseFindingsJSON(findingsJSON)
+	for _, item := range findings.Items {
+		if item.ID == ciRepairIncompleteFindingID {
+			return item, true
+		}
+	}
+	return Finding{}, false
+}
+
+// withoutCIIncompleteRepairFindingsJSON drops an earlier round's
+// incomplete-repair finding from findings this round only forwards, because
+// only the current execution's verdict may produce one.
+func withoutCIIncompleteRepairFindingsJSON(raw string) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	kept := findings.Items[:0:0]
+	for _, item := range findings.Items {
+		if item.ID != ciRepairIncompleteFindingID {
+			kept = append(kept, item)
+		}
+	}
+	if len(kept) == len(findings.Items) {
+		return raw
+	}
+	findings.Items = kept
+	encoded, _ := types.MarshalFindingsJSON(findings)
+	return encoded
+}
+
+// withCIIncompleteRepairFinding adds the incomplete-repair finding to a
+// protected-path refusal, so approving the protected path neither hides nor
+// clears the agent's verdict.
+func withCIIncompleteRepairFinding(outcome *pipeline.StepOutcome, finding Finding) *pipeline.StepOutcome {
+	parked, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		parked = Findings{}
+	}
+	parked.Items = append(parked.Items, finding)
+	encoded, _ := types.MarshalFindingsJSON(parked)
+	outcome.Findings = encoded
+	return outcome
+}
+
+// ciIncompleteRepairOutcome parks the CI step after a repair agent reported
+// its own repair unfinished (ciRepairCompletenessRule).
+//
+// No further round is spent automatically: the agent has reported what it
+// could not finish, and whether to spend another budget on it, finish it by
+// hand, or accept the red is the operator's call - the same bounded shape
+// ciFixAgentTimeoutOutcome uses when the agent runs out of budget before it
+// can report at all.
+func ciIncompleteRepairOutcome(selected Findings, deferredRaw, issueDesc, reason string) *pipeline.StepOutcome {
+	return ciIncompleteRepairPark(Findings{Items: []Finding{ciRepairIncompleteFinding(issueDesc, reason)}}, selected, deferredRaw)
+}
+
+// ciCarriedIncompleteRepairOutcome parks at the incomplete-repair gate once a
+// protected-path refusal that carried the verdict has been retried: every
+// finding parked with the refusal stays, and only the refusal itself, now
+// resolved, leaves.
+func ciCarriedIncompleteRepairOutcome(refusalFindings string) *pipeline.StepOutcome {
+	parked, _ := types.ParseFindingsJSON(refusalFindings)
+	kept := Findings{}
+	for _, item := range parked.Items {
+		if !pipeline.IsProtectedPathRefusal(item) {
+			kept.Items = append(kept.Items, item)
+		}
+	}
+	return ciIncompleteRepairPark(kept, Findings{}, "")
+}
+
+func ciIncompleteRepairPark(findings, selected Findings, deferredRaw string) *pipeline.StepOutcome {
+	findings.Summary = "CI repair agent reported its repair incomplete"
+	encoded, _ := types.MarshalFindingsJSON(findings)
+	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, selected, deferredRaw)
+}
+
 func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, deferredRaw string) *pipeline.StepOutcome {
 	parked, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil {
@@ -571,7 +673,7 @@ func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, d
 		seenItems[item] = true
 	}
 	appendFinding := func(item Finding) {
-		if item.ID != "" && seenIDs[item.ID] || seenItems[item] {
+		if item.ID == ciRepairIncompleteFindingID || item.ID != "" && seenIDs[item.ID] || seenItems[item] {
 			return
 		}
 		parked.Items = append(parked.Items, item)

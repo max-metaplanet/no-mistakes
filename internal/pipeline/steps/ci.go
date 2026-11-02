@@ -66,7 +66,7 @@ type CIStep struct {
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
-	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
+	pendingFixSummary    string                    // one-line summary of the repair this execution produced, attached to the outcome it ends with
 	pendingRepairPublish bool
 	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
 	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
@@ -81,6 +81,14 @@ type CIStep struct {
 	// set only for the duration of that repair's recording. recordRepair
 	// proves a pure replay against exactly this commit and nothing else.
 	replayBase string
+	// repairIncomplete is the reason a repair's own agent gave for reporting
+	// it unfinished, held for the rest of the execution that heard it: every
+	// recordRepair in that execution holds instead of publishing, and every
+	// exit that would otherwise move past the repair parks at the
+	// incomplete-repair gate. A protected-path refusal outlives the execution,
+	// so it carries the verdict as a finding (ciCarriedIncompleteRepair) that
+	// its retry binds here again.
+	repairIncomplete string
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.
@@ -311,12 +319,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		s.pendingFixSummary = ""
 		s.pendingRepairPublish = false
+		s.repairIncomplete = ""
 	}()
 	defer func() {
 		if !retryRefusal {
 			return
 		}
 		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
+			if incomplete, held := ciCarriedIncompleteRepair(refusalFindings); held {
+				refusal = withCIIncompleteRepairFinding(refusal, incomplete)
+			}
 			outcome, err = refusal, nil
 			return
 		}
@@ -382,11 +394,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 			return nil, err
 		}
+		incomplete, held := ciCarriedIncompleteRepair(refusalFindings)
+		if held {
+			s.repairIncomplete = incomplete.Description
+		}
 		repair, err := s.retryProtectedPathRepair(sctx)
 		if err != nil {
 			return nil, err
 		}
 		retryRefusal = false
+		if held {
+			return ciCarriedIncompleteRepairOutcome(refusalFindings), nil
+		}
 		if repair.Revalidate {
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom()}, nil
 		}
@@ -436,7 +455,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			if err != nil {
 				return nil, err
 			}
-			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: sctx.DeferredFindings}, nil
+			if s.repairIncomplete != "" {
+				targets, err := parseCIFixTargets(sctx.PreviousFindings)
+				if err != nil {
+					return nil, err
+				}
+				return ciIncompleteRepairOutcome(targets.Findings, sctx.DeferredFindings, targets.description(), s.repairIncomplete), nil
+			}
+			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: withoutCIIncompleteRepairFindingsJSON(sctx.DeferredFindings)}, nil
 		}
 	}
 
