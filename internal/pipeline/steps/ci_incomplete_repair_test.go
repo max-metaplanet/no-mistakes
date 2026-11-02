@@ -3,10 +3,14 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -109,6 +113,99 @@ func TestCIStep_IncompleteRepairIsHeldForADecision(t *testing.T) {
 			}
 			if run.ReviewApprovedHeadSHA != nil && strings.TrimSpace(*run.ReviewApprovedHeadSHA) != "" {
 				t.Fatalf("review approval = %q, want it revoked so Push cannot publish the held repair either", *run.ReviewApprovedHeadSHA)
+			}
+		})
+	}
+}
+
+// TestCIStep_IncompleteVerdictSurvivesAProtectedPathRefusal is the same
+// incident with one more obstacle in the way: the unfinished repair also
+// touches a protected path, so it first parks at the protected-path gate.
+// Approving that path with a fix response must not publish what the agent
+// said was not ready; it lands at the incomplete-repair gate instead.
+func TestCIStep_IncompleteVerdictSurvivesAProtectedPathRefusal(t *testing.T) {
+	t.Parallel()
+	const incompleteReason = "the migration is renamed but the snapshot restore and the tests never ran"
+	for _, tc := range []struct {
+		name          string
+		conclusion    string
+		wantPublished bool
+	}{
+		{
+			name:          "a_complete_repair_publishes_after_the_retry",
+			conclusion:    `{"summary":"repair the failing check","code_change_needed":true,"repair_complete":true}`,
+			wantPublished: true,
+		},
+		{
+			name:          "an_incomplete_repair_parks_after_the_retry",
+			conclusion:    `{"summary":"` + incompleteReason + `","code_change_needed":true,"repair_complete":false}`,
+			wantPublished: false,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			f := newCIRepairFixture(t, false, nil)
+			f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				calls++
+				for file, content := range map[string]string{"package.lock": "refused\n", "fix.go": "retained repair\n"} {
+					if err := os.WriteFile(filepath.Join(opts.CWD, file), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return &agent.Result{Output: json.RawMessage(tc.conclusion)}, nil
+			}}
+			f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+			outcome, err := f.run(t)
+			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
+				t.Fatalf("repair did not refuse: %+v, %v\n%s", outcome, err, f.log())
+			}
+			if _, carried := ciCarriedIncompleteRepair(outcome.Findings); carried == tc.wantPublished {
+				t.Fatalf("protected-path gate carries the incomplete verdict = %v, want %v:\n%s", carried, !tc.wantPublished, outcome.Findings)
+			}
+			if !tc.wantPublished && !strings.Contains(outcome.Findings, incompleteReason) {
+				t.Fatalf("the protected-path gate does not show the agent's reason:\n%s", outcome.Findings)
+			}
+
+			persistCIRefusal(t, f, outcome)
+			if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
+				t.Fatal(err)
+			}
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = outcome.Findings
+			f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
+			outcome, err = f.run(t)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("retry: %+v, %v\n%s", outcome, err, f.log())
+			}
+			if calls != 1 {
+				t.Fatalf("retry ran another fixer over retained work: %d calls", calls)
+			}
+			localHead := f.localHead(t)
+			if localHead == f.headSHA {
+				t.Fatalf("the retry never committed the retained repair\n%s", f.log())
+			}
+			published := f.remoteHead(t) == localHead
+			if published != tc.wantPublished {
+				t.Fatalf("published = %v, want %v (local=%s remote=%s)\n%s", published, tc.wantPublished, localHead, f.remoteHead(t), f.log())
+			}
+			if tc.wantPublished {
+				return
+			}
+			if f.remoteHead(t) != f.headSHA {
+				t.Fatalf("remote head = %s, want the pre-repair head %s", f.remoteHead(t), f.headSHA)
+			}
+			if outcome == nil || !outcome.NeedsApproval || outcome.RestartFrom != "" {
+				t.Fatalf("outcome = %+v, want a park at the incomplete-repair gate", outcome)
+			}
+			if pipeline.HasProtectedPathRefusal(outcome.Findings) {
+				t.Fatalf("the resolved protected-path refusal is still parked:\n%s", outcome.Findings)
+			}
+			parked, carried := ciCarriedIncompleteRepair(outcome.Findings)
+			if !carried || parked.Action != types.ActionAskUser || !strings.Contains(parked.Description, incompleteReason) {
+				t.Fatalf("findings = %s, want the ask-user incomplete-repair finding with the agent's reason", outcome.Findings)
 			}
 		})
 	}

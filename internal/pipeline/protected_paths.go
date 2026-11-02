@@ -40,6 +40,11 @@ func HasUnvalidatedWorkRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, types.FindingIDTestAgentUnvalidatedWork)
 }
 
+// IsProtectedPathRefusal reports whether finding is the refusal itself.
+func IsProtectedPathRefusal(finding types.Finding) bool {
+	return finding.ID == protectedPathFindingID
+}
+
 func hasFindingID(findingsJSON, id string) bool {
 	findings, _ := types.ParseFindingsJSON(findingsJSON)
 	for _, finding := range findings.Items {

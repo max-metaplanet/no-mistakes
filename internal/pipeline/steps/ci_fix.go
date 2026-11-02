@@ -115,6 +115,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+		if s.repairIncomplete != "" {
+			outcome = withCIIncompleteRepairFinding(outcome, ciRepairIncompleteFinding(issueDesc, s.repairIncomplete))
+		}
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
@@ -141,14 +144,14 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log(fmt.Sprintf("warning: CI fix failed: %v", err))
 		return nil, nil
 	}
+	if s.repairIncomplete != "" {
+		// Nothing was published, so none of the published-repair bookkeeping
+		// applies: no fixed-check key to suppress the next poll's escalation,
+		// and no RepairPublished evidence on the round.
+		s.pendingFixSummary = repair.Summary
+		return ciIncompleteRepairOutcome(targets.Findings, sctx.DeferredFindings, issueDesc, s.repairIncomplete), nil
+	}
 	if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
-		if repair.IncompleteReason != "" {
-			// Nothing was published, so none of the published-repair
-			// bookkeeping applies: no fixed-check key to suppress the next
-			// poll's escalation, and no RepairPublished evidence on the round.
-			s.pendingFixSummary = repair.Summary
-			return ciIncompleteRepairOutcome(targets.Findings, sctx.DeferredFindings, issueDesc, repair.IncompleteReason, sctx.Run.HeadSHA), nil
-		}
 		s.lastFixedChecks = fixKey
 		s.lastFixedCompletedAt = fixCompletedAt
 		s.pendingFixSummary = repair.Summary
@@ -315,7 +318,6 @@ CI logs:
 	// code_change_needed is: the repair that proved this necessary was a merge
 	// conflict resolution.
 	s.repairIncomplete = incompleteRepairReason(conclusion)
-	defer func() { s.repairIncomplete = "" }()
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	var refusal *pipeline.ProtectedPathError
 	if errors.As(err, &refusal) {
@@ -631,11 +633,6 @@ type ciRepairResult struct {
 	ReviewCarried      bool
 	NoCodeChangeNeeded bool
 	Summary            string
-	// IncompleteReason is the agent's own reason for reporting its repair
-	// unfinished. Non-empty means the repair was recorded locally and nothing
-	// was published, and it outranks Revalidate: the run parks for a decision
-	// rather than restarting validation on a head the agent said is not ready.
-	IncompleteReason string
 }
 
 // restartFrom is the step a revalidating repair restarts validation at.
@@ -792,12 +789,7 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 	// decision.
 	if s.repairIncomplete != "" {
 		sctx.Log(fmt.Sprintf("the repair agent reported this repair incomplete: %s; holding it locally instead of publishing", s.repairIncomplete))
-		repair, err := s.recordLocalRepair(sctx, headSHA)
-		if err != nil {
-			return repair, err
-		}
-		repair.IncompleteReason = s.repairIncomplete
-		return repair, nil
+		return s.recordLocalRepair(sctx, headSHA)
 	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
