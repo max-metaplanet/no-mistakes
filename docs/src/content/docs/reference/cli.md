@@ -353,9 +353,9 @@ Answering requires an active run, because only its executor can resume the revie
 
 ## no-mistakes axi execution-origin
 
-Resolve the current child process's producer reference as JSON. This read-only command uses `NO_MISTAKES_EXECUTION_REF`, `NO_MISTAKES_EXECUTION_SOCKET`, and the current Git top-level. It does not start a daemon or infer attribution from a repository or branch.
+Resolve the current child process's producer reference as JSON.
 
-Pass `--ref`, `--socket`, and `--checkout` to query an explicit reference and exact execution checkout. With both producer variables absent, the response has `execution: null`. Partial, malformed, or mismatched references fail. See [Caller origin and execution references](/no-mistakes/reference/environment/#caller-origin-and-execution-references) for the protocol and consumer obligations.
+See [Caller origin and execution references](/no-mistakes/reference/environment/#caller-origin-and-execution-references) for environment defaults, explicit lookup flags, response semantics, and consumer obligations.
 
 ## no-mistakes axi status
 
