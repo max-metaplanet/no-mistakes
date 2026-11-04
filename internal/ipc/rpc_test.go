@@ -212,6 +212,7 @@ func TestSuccessfulReadRequestsDoNotLogAtInfo(t *testing.T) {
 	srv := startServer(t, sock)
 
 	readMethods := []string{
+		ipc.MethodGetExecutionOrigin,
 		ipc.MethodHealth,
 		ipc.MethodGetRun,
 		ipc.MethodGetStepDiff,

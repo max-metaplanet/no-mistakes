@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -129,7 +130,7 @@ func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 	t.Setenv(CompactAdviserDisableEnvVar, "0")
 
 	overlay := runenv.Overlay{
-		Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
+		Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal", runorigin.ReferenceEnv: "run-owned", runorigin.SocketEnv: "socket-owned"},
 		Unset: []string{"GH_TOKEN"},
 	}
 
@@ -159,7 +160,10 @@ func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 				t.Fatalf("%s (%T) does not carry the run-scoped subprocess context", name, created)
 			}
 
-			resolved := resolveAgentEnv(scoped.gitSafeEnv("/work/dir"))
+			resolved := resolveAgentEnv(scoped.gitSafeEnv("/work/dir", []string{runorigin.ReferenceEnv + "=stale-turn", runorigin.SocketEnv + "=stale-socket"}))
+			if resolved[runorigin.ReferenceEnv] != "run-owned" || resolved[runorigin.SocketEnv] != "socket-owned" {
+				t.Fatalf("adapter lost immutable origin: %v", resolved)
+			}
 			if got := resolved["GH_CONFIG_DIR"]; got != "/profiles/personal" {
 				t.Errorf("GH_CONFIG_DIR = %q, want /profiles/personal", got)
 			}

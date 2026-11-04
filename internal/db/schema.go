@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_execution_checkouts (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    checkout TEXT NOT NULL,
+    git_common_dir TEXT NOT NULL,
+    PRIMARY KEY (run_id, checkout)
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -255,6 +262,7 @@ CREATE TABLE IF NOT EXISTS run_retries (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN caller_origin TEXT`,
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,

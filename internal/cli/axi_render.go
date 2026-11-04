@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 	"github.com/spf13/cobra"
@@ -115,6 +116,7 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	OriginReference  *runorigin.Reference
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
@@ -145,6 +147,7 @@ type runView struct {
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
 		ID:                 r.ID,
+		OriginReference:    r.OriginReference,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
@@ -206,6 +209,10 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+	}
+	if r.CallerOrigin != nil {
+		ref := runorigin.Reference(r.ID)
+		rv.OriginReference = &ref
 	}
 	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
 		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
@@ -518,6 +525,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	if rv.RetriedBy != "" {
 		fields = append(fields, toon.Field{Key: "retried_by", Value: rv.RetriedBy})
+	}
+	if rv.OriginReference != nil {
+		fields = append(fields, toon.Field{Key: "origin_reference", Value: string(*rv.OriginReference)})
 	}
 	if p := rv.VerificationPlan; p != nil {
 		fields = append(fields, toon.Field{Key: "verification_plan", Value: toon.NewObject(

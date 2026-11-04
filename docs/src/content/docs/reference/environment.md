@@ -25,7 +25,7 @@ When set, everything else moves under this root:
 - Local evaluation cases and registry: `$NM_HOME/eval/` (created by automatic collection or an explicit `no-mistakes eval` command)
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
-A push is handled by the root that owns the gate it was pushed to, not by the root `NM_HOME` names. Git does not set `NM_HOME` for a hook, so the managed `pre-receive` and `post-receive` hooks would otherwise reach whichever daemon the pushing shell happened to point at - usually the default `~/.no-mistakes`, since the variable is normally unset. Instead the CLI resolves its root from the gate path the hook passes it: a gate always lives at `$NM_HOME/repos/<id>.git`, so the owning root is a property of where the gate sits. A push to a gate under one root therefore reaches that root's daemon even when `NM_HOME` is unset or names a different root. A path that is not a managed gate is refused rather than resolved against the default root, so `pre-receive` fails the push and `post-receive` stays non-blocking and records the skipped notification in the gate's `notify-push.log`. The daemon enforces the same ownership on its own side of both calls, refusing to admit or to start a run for a gate that does not sit under its root. Existing installs get this by updating the binary; the hook scripts are unchanged, so no gate needs regenerating.
+A push is handled by the root that owns the gate it was pushed to, not by the root `NM_HOME` names. Git does not set `NM_HOME` for a hook, so the managed `pre-receive` and `post-receive` hooks would otherwise reach whichever daemon the pushing shell happened to point at - usually the default `~/.no-mistakes`, since the variable is normally unset. Instead the CLI resolves its root from the gate path the hook passes it: a gate always lives at `$NM_HOME/repos/<id>.git`, so the owning root is a property of where the gate sits. A push to a gate under one root therefore reaches that root's daemon even when `NM_HOME` is unset or names a different root. A path that is not a managed gate is refused rather than resolved against the default root, so `pre-receive` fails the push and `post-receive` stays non-blocking and records the skipped notification in the gate's `notify-push.log`. The daemon enforces the same ownership on its own side of both calls, refusing to admit or to start a run for a gate that does not sit under its root. Gate ownership routing requires no hook regeneration. [Caller-origin submissions](#caller-origin-and-execution-references) have separate managed-hook compatibility requirements.
 
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
@@ -335,3 +335,68 @@ When set to a disabling value, telemetry stays off even if a runtime or embedded
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), the macOS and Linux service definitions include a default `PATH` with common user and system binary directories. They also bake in any proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`) that were set when you installed or refreshed the service, so the daemon and the agents it spawns can reach the network through your proxy even when the login-shell probe is unavailable. Once baked in, the values are preserved across later service refreshes and restarts even when the proxy variables are not exported in that shell, so a routine `daemon restart` or a binary upgrade will not strip them; export the variables again only when you need to change or remove them. Both the upper- and lower-case spellings are forwarded exactly as you set them, because tooling is inconsistent about which it reads (curl, for example, honors only the lower-case `http_proxy` for plain-HTTP requests). Because a proxy URL can embed credentials (for example `http://user:pass@host`), the generated service file is restricted to owner-only `0600` permissions whenever proxy values are forwarded into it. When no proxy variables are set, the generated definition is unchanged and keeps the conventional `0644` mode. Windows Task Scheduler inherits your logon environment and needs no forwarding. At daemon startup, the daemon resolves environment once from your login shell on macOS and Linux (`$SHELL -l -i -c 'env -0'` for bash and zsh, run in its own session so an interactive shell never waits on a terminal), preserves your shell `PATH` order, and appends any missing well-known directories such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`. When the login shell binary itself does not exist yet, which happens on macOS with nix-darwin when the daemon starts at login before `/run/current-system` has been recreated, startup waits for it with backoff for up to a minute before giving up. If login-shell resolution still fails or returns no entries, the daemon logs a warning and uses an augmented process-environment fallback that may omit version-manager directories such as nvm, fnm, or volta. Restart the daemon to pick up a login shell that appeared or changed after startup. On Windows it reuses the current process environment.
 
 If your env vars aren't set in your login shell's rc files (`.zprofile`, `.zshrc`, `.profile`, `.bash_profile`, `.bashrc`, PowerShell profile), the daemon won't see them. Put them somewhere a login shell will load, then restart the daemon to pick them up.
+
+## Caller origin and execution references
+
+`axi run --caller-origin-file PATH` accepts optional, non-secret caller attribution for a new run. The file contains one JSON object, up to 16 KiB:
+
+```json
+{
+  "namespace": "fixture.firstmate",
+  "home": "/work/fixture-home",
+  "task": "fixture-task",
+  "generation": "fixture-generation"
+}
+```
+
+All four fields are required strings. Each is bounded to 4,096 bytes and cannot contain control characters or surrounding whitespace. `home` must be an absolute, clean path. Unknown file fields are rejected. Do not include credentials or environment dumps. No-mistakes does not read the named owner's metadata or grant leases. The owner must validate its own task, frozen generation, source checkout, and authorization.
+
+The submitting CLI captures its physical Git top-level as `source_checkout`. The daemon records the accepted source head and its own execution checkout before starting the pipeline. A registered repository's working path, branch name, matching head, or daemon environment never supplies caller identity. The source path is historical attribution from the submitting CLI, not a daemon attestation of the source filesystem at a later time.
+
+Caller origin is immutable on a run. Ordinary reattachment requires omitting `--caller-origin-file`; it cannot replace an origin. When concurrent submissions or a no-op push select an existing run, an origin submission is accepted only if the persisted `source_checkout`, `namespace`, `home`, `task`, and frozen `generation` all match. A matching head alone is insufficient. A nonce-bound launch can replay the identical origin, but a conflicting claim cannot consume its receipt. Recovery reads the stored binding. Retry and rerun preserve the original caller, source checkout, and source head, while binding the new run to its own execution checkout. An explicit conflicting origin on a continuation is refused. Use a fresh nonce-bound launch for a different task generation. Historical and operator runs without origin remain unattributed.
+
+Both the daemon and the managed post-receive helper must support this protocol. Before an origin submission changes the private mirror, the CLI probes the daemon and requires the exact managed hook pinned to that CLI executable. After an approved binary upgrade, reinitialize each affected gate with that binary. An older daemon, stale helper path, or custom hook is refused. Existing clients that omit origin continue to work.
+
+### `NO_MISTAKES_EXECUTION_REF`
+
+An opaque reference to the current run's immutable execution association. Consumers must not parse it or use it as an authorization token.
+
+### `NO_MISTAKES_EXECUTION_SOCKET`
+
+The owning daemon's socket. Use this socket with the reference instead of selecting a daemon through ambient `NM_HOME`.
+
+The daemon stamps both variables onto configured commands and every phase-agent subprocess, including fallback agents, session resumes, and managed agent servers. The stamp overrides ambient and per-turn values. Unattributed runs remove both variables. The daemon process environment is unchanged.
+
+From a child process, resolve the association with:
+
+```sh
+no-mistakes axi execution-origin
+```
+
+This read-only command emits JSON and does not start a daemon or emit telemetry. It uses the producer variables and the current Git top-level. Explicit callers can pass `--ref`, `--socket`, and `--checkout` instead. The daemon checks the exact execution checkout and its recorded Git directory. Test also records its producer-created base clone before running configured commands there. That clone resolves to the same run and original source, with its own exact execution checkout. Another checkout, an unknown reference, an unavailable execution checkout, or malformed stored origin fails. A source checkout is not an execution checkout.
+
+A successful v1 response has this shape:
+
+```json
+{
+  "protocol_version": 1,
+  "execution": {
+    "reference": "opaque-local-reference",
+    "run_id": "producer-run-id",
+    "source_checkout": "/work/fixture-source",
+    "source_head": "original-submitted-commit",
+    "execution_checkout": "/work/private-execution",
+    "caller_origin": {
+      "namespace": "fixture.firstmate",
+      "home": "/work/fixture-home",
+      "task": "fixture-task",
+      "generation": "fixture-generation"
+    },
+    "run_status": "running"
+  }
+}
+```
+
+With neither producer variable, the command returns `{"protocol_version":1,"execution":null}`. A partial or invalid reference fails instead of falling back to absence. Consumers must validate the protocol, exact owner metadata, execution checkout, and current run status before authorizing reuse. The reference is local producer evidence, not protection against a same-user caller forging attribution.
+
+The supported IPC methods are the existing `push_received`, `start_fresh_run`, `rerun`, and `claim_launch_receipt` with optional `caller_origin: {source_checkout, caller_origin: {namespace, home, task, generation}}`, and read-only `get_execution_origin` with `{reference, execution_checkout}`. An empty lookup request returns the protocol version as a capability probe. `get_run` and `axi status` expose `origin_reference` only for attributed runs. Origin records remain in local run storage and are not added to PR attestations or published test evidence.

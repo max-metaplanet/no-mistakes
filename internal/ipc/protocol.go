@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
@@ -14,6 +15,7 @@ const MaxFrameBytes = 1024 * 1024
 
 // JSON-RPC 2.0 method names.
 const (
+	MethodGetExecutionOrigin        = "get_execution_origin"
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
@@ -81,8 +83,9 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts. LaunchNonce and ValidationGeneration together
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
-	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	CallerOrigin       *runorigin.Submission `json:"caller_origin,omitempty"`
+	VerificationPlanID string                `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile   `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -111,8 +114,9 @@ type PushReceivedParams struct {
 // branch head. The daemon checks the gate while holding the branch lock, so a
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
-	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	CallerOrigin       *runorigin.Submission `json:"caller_origin,omitempty"`
+	VerificationPlanID string                `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile   `json:"pi_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -159,7 +163,8 @@ type ProbeOmitIntentResult struct {
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
-	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	CallerOrigin *runorigin.Submission `json:"caller_origin,omitempty"`
+	PiProfile    *agentcfg.PiProfile   `json:"pi_profile,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -222,8 +227,9 @@ type GetActiveRunParams struct {
 // leaves the new run to perform fresh inference.
 // ClosingIssueRefs are merged with the selected run's persisted references.
 type RerunParams struct {
-	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	CallerOrigin       *runorigin.Submission `json:"caller_origin,omitempty"`
+	VerificationPlanID string                `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile   `json:"pi_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -496,6 +502,7 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
+	OriginReference  *runorigin.Reference       `json:"origin_reference,omitempty"`
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
@@ -693,4 +700,16 @@ func NewErrorResponse(id int64, code int, message string) *Response {
 		Error:   &RPCError{Code: code, Message: message},
 		ID:      id,
 	}
+}
+
+// GetExecutionOriginParams resolves an exact producer association. An empty
+// reference with an empty checkout is a read-only protocol capability probe.
+type GetExecutionOriginParams struct {
+	Reference         runorigin.Reference `json:"reference"`
+	ExecutionCheckout string              `json:"execution_checkout"`
+}
+
+type GetExecutionOriginResult struct {
+	ProtocolVersion int                  `json:"protocol_version"`
+	Execution       *runorigin.Execution `json:"execution"`
 }

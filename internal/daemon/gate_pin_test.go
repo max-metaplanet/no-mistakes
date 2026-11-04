@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -43,7 +44,7 @@ gates:
 // carries defaultBranchYAML, plus a run parked at an approval gate whose step
 // rows are exactly the sequence pinnedGates produces. It returns the run
 // manager, the parked run, and the step names the run actually recorded.
-func gatePinFixture(t *testing.T, defaultBranchYAML string, pinnedGates []config.Gate) (*RunManager, *db.Run, []types.StepName) {
+func gatePinFixture(t *testing.T, defaultBranchYAML string, pinnedGates []config.Gate, origins ...*runorigin.Submission) (*RunManager, *db.Run, []types.StepName) {
 	t.Helper()
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
@@ -62,12 +63,21 @@ func gatePinFixture(t *testing.T, defaultBranchYAML string, pinnedGates []config
 	repo, _ := setupTestGitRepo(t, p, d, "repo1")
 	headSHA := commitDefaultBranchConfig(t, repo.WorkingPath, defaultBranchYAML)
 
-	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	var origin *runorigin.Origin
+	if len(origins) > 0 {
+		origin = &runorigin.Origin{Submission: *origins[0], SourceHead: headSHA}
+	}
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", headSHA, headSHA, nil, "", "", "", "", false, nil, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
+	}
+	if origin != nil {
+		if err := d.SetRunWorktreeDir(run.ID, p.WorktreeDir(repo.ID, run.ID)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	gitCmd(t, p.RepoDir(repo.ID), "worktree", "add", "--detach", p.WorktreeDir(repo.ID, run.ID), headSHA)
 

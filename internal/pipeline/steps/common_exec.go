@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
@@ -182,7 +183,7 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 	if sctx.ForgeContext != nil && !sctx.ForgeContext.Environment.Empty() {
 		env = sctx.ForgeContext.Environment.Apply(env)
 	}
-	return env
+	return runorigin.Stamp(env, sctx.ExecutionEnv)
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard

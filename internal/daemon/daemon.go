@@ -27,6 +27,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -1159,6 +1160,13 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return nil
 	}
 
+	srv.Handle(ipc.MethodGetExecutionOrigin, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetExecutionOriginParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		return mgr.executionOrigin(ctx, p)
+	})
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		return &ipc.HealthResult{Status: "ok"}, nil
 	})
@@ -1338,12 +1346,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PiProfile)
+		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.CallerOrigin, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
 		if run == nil {
 			return &ipc.ClaimLaunchReceiptResult{}, nil
+		}
+		if p.CallerOrigin != nil && (run.CallerOrigin == nil || run.CallerOrigin.Submission != *p.CallerOrigin) {
+			return nil, fmt.Errorf("conflicting launch_nonce: caller origin differs")
 		}
 		if !run.PiProfile.Matches(p.PiProfile) {
 			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
@@ -1446,7 +1457,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.PiProfile)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.CallerOrigin, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1606,11 +1617,12 @@ func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	info := &ipc.RunInfo{
-		ID:                 r.ID,
-		RepoID:             r.RepoID,
-		Branch:             r.Branch,
-		HeadSHA:            r.HeadSHA,
-		SubmittedHeadSHA:   r.SubmittedHeadSHA,
+		ID:               r.ID,
+		RepoID:           r.RepoID,
+		Branch:           r.Branch,
+		HeadSHA:          r.HeadSHA,
+		SubmittedHeadSHA: r.SubmittedHeadSHA,
+
 		BaseSHA:            r.BaseSHA,
 		Status:             r.Status,
 		PRURL:              r.PRURL,
@@ -1645,6 +1657,10 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 				info.CIOverrideReason = stepInfo.OverrideReason
 			}
 		}
+	}
+	if r.CallerOrigin != nil {
+		ref := runorigin.Reference(r.ID)
+		info.OriginReference = &ref
 	}
 	return info
 }

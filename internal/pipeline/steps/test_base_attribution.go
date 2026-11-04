@@ -158,6 +158,26 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 	if _, err := stepGitRun(sctx, "-C", checkout, "checkout", "--quiet", "--detach", baseSHA); err != nil {
 		return "", 0, fmt.Errorf("check out base commit %s: %w", shortSHA(baseSHA), err)
 	}
+	if sctx.Run != nil && sctx.Run.CallerOrigin != nil {
+		physical, err := filepath.EvalSymlinks(checkout)
+		if err != nil {
+			return "", 0, err
+		}
+		common, err := stepGitRun(sctx, "-C", physical, "rev-parse", "--git-common-dir")
+		if err != nil {
+			return "", 0, err
+		}
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(physical, common)
+		}
+		common, err = filepath.EvalSymlinks(common)
+		if err != nil {
+			return "", 0, err
+		}
+		if err := sctx.DB.RecordAuxiliaryRunCheckout(sctx.Run.ID, physical, common); err != nil {
+			return "", 0, fmt.Errorf("record base execution checkout: %w", err)
+		}
+	}
 	ctx, cancel, budget := testAgentContext(sctx)
 	defer cancel()
 	exceeded := func() error {

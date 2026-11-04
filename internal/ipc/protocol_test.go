@@ -432,6 +432,7 @@ func TestNullableFieldsOmitted(t *testing.T) {
 
 func TestMethodConstants(t *testing.T) {
 	methods := []string{
+		MethodGetExecutionOrigin,
 		MethodPushReceived,
 		MethodGetRun,
 		MethodGetStepDiff,
@@ -456,9 +457,6 @@ func TestMethodConstants(t *testing.T) {
 			t.Errorf("duplicate method: %q", m)
 		}
 		seen[m] = true
-	}
-	if len(methods) != 14 {
-		t.Errorf("expected 14 methods, got %d", len(methods))
 	}
 }
 

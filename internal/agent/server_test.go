@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 )
 
 // TestStartServerWithPort_DetectsEarlyExit verifies that when the spawned
@@ -48,10 +49,10 @@ func TestStartServerWithPortAppliesForgeEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	capture := filepath.Join(dir, "env.txt")
 	name := "fake-server"
-	script := "#!/bin/sh\nprintf 'config:%s token:%s disable:%s\\n' \"$GLAB_CONFIG_DIR\" \"${GITLAB_TOKEN:+set}\" \"$COMPACT_ADVISER_DISABLE\" > \"$CAPTURE_FILE\"\nexit 1\n"
+	script := "#!/bin/sh\nprintf 'config:%s token:%s disable:%s ref:%s socket:%s\\n' \"$GLAB_CONFIG_DIR\" \"${GITLAB_TOKEN:+set}\" \"$COMPACT_ADVISER_DISABLE\" \"$NO_MISTAKES_EXECUTION_REF\" \"$NO_MISTAKES_EXECUTION_SOCKET\" > \"$CAPTURE_FILE\"\nexit 1\n"
 	if runtime.GOOS == "windows" {
 		name += ".cmd"
-		script = "@echo off\r\nset TOKENSTATE=\r\nif defined GITLAB_TOKEN set TOKENSTATE=set\r\necho config:%GLAB_CONFIG_DIR% token:%TOKENSTATE% disable:%COMPACT_ADVISER_DISABLE%>\"%CAPTURE_FILE%\"\r\nexit /b 1\r\n"
+		script = "@echo off\r\nset TOKENSTATE=\r\nif defined GITLAB_TOKEN set TOKENSTATE=set\r\necho config:%GLAB_CONFIG_DIR% token:%TOKENSTATE% disable:%COMPACT_ADVISER_DISABLE% ref:%NO_MISTAKES_EXECUTION_REF% socket:%NO_MISTAKES_EXECUTION_SOCKET%>\"%CAPTURE_FILE%\"\r\nexit /b 1\r\n"
 	}
 	bin := filepath.Join(dir, name)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -62,11 +63,12 @@ func TestStartServerWithPortAppliesForgeEnvironment(t *testing.T) {
 
 	_, err := startServerWithPort(context.Background(), "test", bin, nil, dir, "/healthcheck", 1, runenv.Overlay{
 		Set: map[string]string{
-			"CAPTURE_FILE":    capture,
-			"GLAB_CONFIG_DIR": "/profiles/work",
+			"CAPTURE_FILE":         capture,
+			"GLAB_CONFIG_DIR":      "/profiles/work",
+			runorigin.ReferenceEnv: "managed-run", runorigin.SocketEnv: "managed-socket",
 		},
 		Unset: []string{"GITLAB_TOKEN"},
-	})
+	}, []string{runorigin.ReferenceEnv + "=forged-turn", runorigin.SocketEnv + "=forged-socket"})
 	if err == nil {
 		t.Fatal("expected fake server to exit")
 	}
@@ -74,7 +76,7 @@ func TestStartServerWithPortAppliesForgeEnvironment(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if got := strings.TrimSpace(string(data)); got != "config:/profiles/work token: disable:1" {
+	if got := strings.TrimSpace(string(data)); got != "config:/profiles/work token: disable:1 ref:managed-run socket:managed-socket" {
 		t.Fatalf("managed server environment = %q", got)
 	}
 }

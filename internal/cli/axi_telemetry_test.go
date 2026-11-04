@@ -61,6 +61,7 @@ func TestAxiReadSurfacesEmitNoTelemetry(t *testing.T) {
 		{"home", []string{"axi"}},
 		{"status", []string{"axi", "status"}},
 		{"logs", []string{"axi", "logs", "--step", "review"}},
+		{"execution-origin", []string{"axi", "execution-origin"}},
 	}
 
 	for _, tc := range cases {
