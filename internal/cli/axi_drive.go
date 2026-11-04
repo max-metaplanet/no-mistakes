@@ -472,14 +472,8 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, err.Error())
 		}
 	}
-	if origin != nil {
-		var accepted ipc.GetRunResult
-		if err := env.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &accepted); err != nil {
-			return emitError(cmd, 1, err.Error())
-		}
-		if accepted.Run == nil || accepted.Run.OriginReference == nil || string(*accepted.Run.OriginReference) != runID {
-			return emitError(cmd, 1, "accepted run has no caller origin association; refusing unattributed execution")
-		}
+	if err := acceptSelectedRunOrigin(env.d, runID, origin); err != nil {
+		return emitError(cmd, 1, err.Error())
 	}
 	if launchReceipt != nil {
 		emitLaunchReceipt(cmd, *launchReceipt)
@@ -852,9 +846,6 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	}
 
 	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
-		if origin != nil && run.OriginReference == nil {
-			return "", fmt.Errorf("submitting hook dropped caller origin; refusing unattributed run")
-		}
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}

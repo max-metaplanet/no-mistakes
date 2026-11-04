@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/runorigin"
@@ -16,6 +17,23 @@ import (
 )
 
 const originPushPrefix = "no-mistakes.caller-origin="
+
+func acceptSelectedRunOrigin(d *db.DB, runID string, requested *runorigin.Submission) error {
+	if requested == nil {
+		return nil
+	}
+	run, err := d.GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("read selected run caller origin: %w", err)
+	}
+	if run == nil || run.CallerOrigin == nil {
+		return fmt.Errorf("accepted run has no caller origin association; refusing unattributed execution")
+	}
+	if run.CallerOrigin.Submission != *requested {
+		return fmt.Errorf("caller origin conflicts with the selected run %s", runID)
+	}
+	return nil
+}
 
 func callerOriginFromFlags(cmd *cobra.Command) (*runorigin.Submission, error) {
 	if !cmd.Flags().Changed("caller-origin-file") {
