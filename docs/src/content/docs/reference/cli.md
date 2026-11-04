@@ -131,6 +131,7 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | --------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
 | `--intent`      | `string` | (none)  | What the user set out to accomplish; `-` reads stdin to EOF; exclusive with `--intent-file` |
 | `--intent-file` | `string` | (none)  | Read intent from a file relative to the caller's working directory; exclusive with `--intent` |
+| `--caller-origin-file` | `string` | (none) | Optional non-secret caller attribution JSON for a new run; see [Caller origin](/no-mistakes/reference/environment/#caller-origin-and-execution-references) |
 | `--verification-plan` | `string` | (none) | Path to a nonempty UTF-8 verification plan, at most 64 KiB (65,536 bytes), captured as separate evidence for a new run only |
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
@@ -349,6 +350,12 @@ The answer that closes the last open question sets the run moving again, so it t
 Every answered question is recorded per branch, so a later cold reviewer receives it as settled and does not re-raise it, and the question and answer appear in the PR body's review conversation.
 
 Answering requires an active run, because only its executor can resume the reviewer.
+
+## no-mistakes axi execution-origin
+
+Resolve the current child process's producer reference as JSON. This read-only command uses `NO_MISTAKES_EXECUTION_REF`, `NO_MISTAKES_EXECUTION_SOCKET`, and the current Git top-level. It does not start a daemon or infer attribution from a repository or branch.
+
+Pass `--ref`, `--socket`, and `--checkout` to query an explicit reference and exact execution checkout. With both producer variables absent, the response has `execution: null`. Partial, malformed, or mismatched references fail. See [Caller origin and execution references](/no-mistakes/reference/environment/#caller-origin-and-execution-references) for the protocol and consumer obligations.
 
 ## no-mistakes axi status
 

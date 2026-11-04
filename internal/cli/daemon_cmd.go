@@ -146,6 +146,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			callerOrigin, err := parseCallerOriginPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			closingIssues, err := parseClosingIssueRefsPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -184,6 +188,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,
+				CallerOrigin:           callerOrigin,
 			}, &result)
 		},
 	}

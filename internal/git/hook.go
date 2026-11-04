@@ -133,6 +133,7 @@ func PostReceiveHookScript() string {
 func postReceiveHookScript(command string) string {
 	return `#!/bin/sh
 # no-mistakes post-receive hook
+# caller-origin protocol v1
 # Notifies the daemon of the push. Non-blocking: post-receive exit code is
 # ignored by git, so we never reject the push here. Instead, failures are
 # surfaced on stderr (so the pushing client sees them) and appended to
@@ -402,4 +403,21 @@ func isWorktreeConfigUnsupported(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "unknown option") && strings.Contains(msg, "worktree")
+}
+
+// RequireCallerOriginHook refuses an older pinned hook helper before submission.
+// Exact rendering also excludes custom wrappers and PATH fallback selection.
+func RequireCallerOriginHook(bareDir string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(exe); err != nil {
+		return fmt.Errorf("caller origin hook helper is unavailable: %w", err)
+	}
+	content, err := os.ReadFile(filepath.Join(bareDir, "hooks", "post-receive"))
+	if err != nil || string(content) != PostReceiveHookScript() {
+		return fmt.Errorf("caller origin requires the managed post-receive hook pinned to this executable; re-initialize the gate with the approved binary before submitting")
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 )
 
 // GateRoleEnvVar is exported into every spawned gate agent's environment as an
@@ -69,5 +70,6 @@ func gitSafeEnvWithOverlay(dir string, overlay runenv.Overlay, extra ...[]string
 	if len(extra) > 0 {
 		env = append(env, extra[0]...)
 	}
+	env = runorigin.Stamp(env, overlay)
 	return append(env, GateRoleEnvVar+"=1", CompactAdviserDisableEnvVar+"=1")
 }

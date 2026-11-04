@@ -24,6 +24,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -96,6 +97,7 @@ type Executor struct {
 	// recorded, so an echo never claims a decision that is not durable.
 	waitingRoundID string
 
+	executionEnvironment  runenv.Overlay
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
 	onPRMerged            func(context.Context, string)
@@ -114,6 +116,11 @@ func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 // subprocess in this run. A nil context preserves ambient behavior.
 func (e *Executor) SetForgeContext(ctx *forgecontext.Context) {
 	e.forge = ctx
+}
+
+// SetExecutionEnvironment pins producer references for this run's children.
+func (e *Executor) SetExecutionEnvironment(env runenv.Overlay) {
+	e.executionEnvironment = env.Clone()
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -738,6 +745,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		GateDir:      e.paths.RepoDir(repo.ID),
 		Config:       e.config,
 		ForgeContext: e.forge,
+		ExecutionEnv: e.executionEnvironment.Clone(),
 		DB:           e.db,
 		StepResultID: gate.stepResult.ID,
 		Agent:        e.agent,
@@ -1363,6 +1371,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Agent:                stepAgent,
 		Config:               e.config,
 		ForgeContext:         e.forge,
+		ExecutionEnv:         e.executionEnvironment.Clone(),
 		DB:                   e.db,
 		StepResultID:         sr.ID,
 		UserIntent:           userIntent,

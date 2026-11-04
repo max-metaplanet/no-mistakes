@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -167,12 +168,14 @@ func TestShutdown_KeepsLiveParkedRunForResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	origin := &runorigin.Submission{SourceCheckout: repo.WorkingPath, Caller: runorigin.Caller{Namespace: "fixture", Home: t.TempDir(), Task: "restart-task", Generation: "restart-generation"}}
 	var pushed ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:         p.RepoDir(repo.ID),
+		Ref:          "refs/heads/main",
+		Old:          "0000000000000000000000000000000000000000",
+		New:          headSHA,
+		CallerOrigin: origin,
 	}, &pushed)
 	_ = client.Close()
 	if err != nil {
@@ -223,4 +226,9 @@ func TestShutdown_KeepsLiveParkedRunForResume(t *testing.T) {
 	}
 
 	approveResumedRun(t, p, d, runID)
+	completed, err := d.GetRun(runID)
+	if err != nil || completed.CallerOrigin == nil || completed.CallerOrigin.Submission != *origin {
+		t.Fatalf("restart lost origin: %+v %v", completed, err)
+	}
+
 }

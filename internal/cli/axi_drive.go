@@ -27,6 +27,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
@@ -256,6 +257,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue this PR closes when merged; repeat for multiple issues (42, owner/repo#42, or a nested GitLab project path)")
+	cmd.Flags().String("caller-origin-file", "", "read optional non-secret caller origin JSON for a new run; source checkout is captured from this CLI")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)
@@ -267,6 +269,10 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 }
 
 func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration string, wait time.Duration, profiles ...*agentcfg.PiProfile) error {
+	origin, err := callerOriginFromFlags(cmd)
+	if err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 	profile := agentcfg.OptionalPiProfile(profiles)
 	if err := profile.ValidateRequest(); err != nil {
 		return emitError(cmd, 2, err.Error())
@@ -319,6 +325,14 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		return emitError(cmd, 2, err.Error())
 	}
 
+	if origin != nil {
+		if err := requireDaemonHonorsOrigin(env.client); err != nil {
+			return emitError(cmd, 2, err.Error())
+		}
+		if err := git.RequireCallerOriginHook(env.p.RepoDir(env.repo.ID)); err != nil {
+			return emitError(cmd, 2, err.Error())
+		}
+	}
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
@@ -345,7 +359,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		if strings.TrimSpace(validationGeneration) == "" {
 			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
 		}
-		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, profile)
+		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, origin, profile)
 		if err != nil {
 			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
 		}
@@ -378,6 +392,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			}
 			runID = active.ID
 		}
+	}
+	if runID != "" && origin != nil && launchNonce == "" {
+		return emitError(cmd, 2, "--caller-origin-file is accepted only when starting a new run; omit it to reattach")
 	}
 	if runID != "" && planRequested {
 		return emitError(cmd, 2, "--verification-plan is accepted only when starting a new run; omit it to reattach")
@@ -438,12 +455,12 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, profile)
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, origin, profile)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, profile)
+			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, origin, profile)
 		}
 		if err == nil && planID != "" && runID != planID {
 			err = fmt.Errorf("launched run does not own the captured verification plan")
@@ -453,6 +470,15 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 				return emitBranchOwnershipError(cmd, ownershipErr)
 			}
 			return emitError(cmd, 1, err.Error())
+		}
+	}
+	if origin != nil {
+		var accepted ipc.GetRunResult
+		if err := env.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &accepted); err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
+		if accepted.Run == nil || accepted.Run.OriginReference == nil || string(*accepted.Run.OriginReference) != runID {
+			return emitError(cmd, 1, "accepted run has no caller origin association; refusing unattributed execution")
 		}
 	}
 	if launchReceipt != nil {
@@ -754,9 +780,10 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, origin *runorigin.Submission, profiles ...*agentcfg.PiProfile) (string, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions = append(pushOptions, formatCallerOriginPushOptions(origin)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	if opt := formatIntentPushOption(intent); opt != "" {
@@ -825,6 +852,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	}
 
 	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
+		if origin != nil && run.OriginReference == nil {
+			return "", fmt.Errorf("submitting hook dropped caller origin; refusing unattributed run")
+		}
 		if !run.PiProfile.Matches(profile) {
 			return "", fmt.Errorf("triggered run has a conflicting Pi profile")
 		}
@@ -842,6 +872,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	var rr ipc.RerunResult
 	params := rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch)
 	params.OmitIntent = omitIntent
+	params.CallerOrigin = origin
 	params.PiProfile = profile
 	params.ClosingIssueRefs = closesIssues
 	params.VerificationPlanID = planID
@@ -858,11 +889,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	return rr.RunID, nil
 }
 
-func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string, omitIntent bool, origin *runorigin.Submission, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
 		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce, PiProfile: agentcfg.OptionalPiProfile(profiles),
-		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent,
+		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest, PRBaseBranch: baseBranch, OmitIntent: omitIntent, CallerOrigin: origin,
 	}, &result); err != nil {
 		return nil, err
 	}
@@ -875,9 +906,10 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // triggerProofRun captures the immutable submitted commit and waits only for
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
-func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, origin *runorigin.Submission, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
+	pushOptions = append(pushOptions, formatCallerOriginPushOptions(origin)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions,
@@ -901,7 +933,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		}
 		return nil, fmt.Errorf("push %q to gate: %w", branch, pushErr)
 	}
-	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, omitIntent, triggerWaitTimeout, profile); err != nil {
+	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, baseBranch, omitIntent, triggerWaitTimeout, origin, profile); err != nil {
 		return nil, err
 	} else if receipt != nil {
 		return receipt, nil
@@ -911,19 +943,20 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues,
+		CallerOrigin:     origin,
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
 	return &result.Receipt, nil
 }
 
-func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, omitIntent bool, timeout time.Duration, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, omitIntent bool, timeout time.Duration, origin *runorigin.Submission, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	poll := time.NewTicker(150 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, profiles...)
+		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent), baseBranch, omitIntent, origin, profiles...)
 		if err != nil {
 			return nil, err
 		}

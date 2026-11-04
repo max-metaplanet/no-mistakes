@@ -432,6 +432,7 @@ func TestNullableFieldsOmitted(t *testing.T) {
 
 func TestMethodConstants(t *testing.T) {
 	methods := []string{
+		MethodGetExecutionOrigin,
 		MethodPushReceived,
 		MethodGetRun,
 		MethodGetStepDiff,

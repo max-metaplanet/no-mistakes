@@ -24,6 +24,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/runorigin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
@@ -107,9 +108,10 @@ func TestRetryContinuesAFailedReviewFromThePreservedHead(t *testing.T) {
 	}
 	defer client.Close()
 
+	origin := &runorigin.Submission{SourceCheckout: repo.WorkingPath, Caller: runorigin.Caller{Namespace: "fixture", Home: t.TempDir(), Task: "retry-task", Generation: "frozen-generation"}}
 	var first ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", New: submitted, Old: submitted, Intent: "keep the corrections",
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", New: submitted, Old: submitted, Intent: "keep the corrections", CallerOrigin: origin,
 	}, &first); err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +143,9 @@ func TestRetryContinuesAFailedReviewFromThePreservedHead(t *testing.T) {
 	retried := waitForRunTerminalState(t, d, result.RunID)
 	if retried.Status != types.RunCompleted || retried.SubmittedHeadSHA == nil || *retried.SubmittedHeadSHA != preserved {
 		t.Fatalf("retried run = %+v, want completed from preserved head %s", retried, preserved)
+	}
+	if retried.CallerOrigin == nil || retried.CallerOrigin.Submission != *origin || retried.CallerOrigin.SourceHead != submitted || retried.WorktreePath() == failed.WorktreePath() {
+		t.Fatalf("retry lost frozen origin or reused execution: %+v", retried.CallerOrigin)
 	}
 	if retried.Intent == nil || *retried.Intent != *failed.Intent || *retried.IntentSource != *failed.IntentSource {
 		t.Fatalf("retried run intent = %v/%v, want the failed run's %v/%v", retried.Intent, retried.IntentSource, *failed.Intent, *failed.IntentSource)
@@ -229,7 +234,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
 	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, nil, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +297,7 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil)
+	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
