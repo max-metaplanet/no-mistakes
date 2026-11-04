@@ -354,6 +354,11 @@ func TestConfiguredChecks_TestWrapperReceivesOpaqueCommandAndKeepsAdditionalChec
 			}
 			command := "  printf '%s' \"team command\"; touch must-not-run; $(touch must-not-expand)\n'quoted' \\ \"double\"  "
 			sctx := commandOverrideContext(t, config.CommandOverride{Wrapper: &wrapper, Additional: []string{"echo additional >> order; echo additional-stdout"}})
+			workDirLink := filepath.Join(t.TempDir(), "execution-checkout")
+			if err := os.Symlink(sctx.WorkDir, workDirLink); err != nil {
+				t.Fatal(err)
+			}
+			sctx.WorkDir = workDirLink
 			sctx.Env = []string{"NM_WRAPPER_TEST_STEP=step value"}
 			out, results, err := runConfiguredChecks(sctx, "test", command)
 			if err != nil || len(results) != 2 || results[0].Local || results[0].Command != command || results[0].ExitCode != exit || !results[1].Local || results[1].ExitCode != 0 {
@@ -362,7 +367,22 @@ func TestConfiguredChecks_TestWrapperReceivesOpaqueCommandAndKeepsAdditionalChec
 			if results[0].Output != "wrapper-stdout\nwrapper-stderr\n" || !strings.Contains(out, results[0].Output) || !strings.Contains(out, "additional-stdout") {
 				t.Fatalf("wrapper stdout/stderr lost from evidence: %q, %+v", out, results)
 			}
-			for name, want := range map[string]string{"argc": "1", "argument": command, "cwd": sctx.WorkDir, "environment": "daemon value/step value", "order": "wrapper\nadditional\n"} {
+			cwd, err := os.ReadFile(filepath.Join(sctx.WorkDir, "cwd"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotDir, err := os.Stat(string(cwd))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantDir, err := os.Stat(sctx.WorkDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(gotDir, wantDir) {
+				t.Errorf("cwd = %q; want directory %q", cwd, sctx.WorkDir)
+			}
+			for name, want := range map[string]string{"argc": "1", "argument": command, "environment": "daemon value/step value", "order": "wrapper\nadditional\n"} {
 				data, err := os.ReadFile(filepath.Join(sctx.WorkDir, name))
 				if err != nil || string(data) != want {
 					t.Errorf("%s = %q, %v; want %q", name, data, err, want)
