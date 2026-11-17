@@ -5,6 +5,18 @@ description: All fields for ~/.no-mistakes/config.yaml.
 
 Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to relocate the config directory.
 
+## `default_skip_steps` (fork only)
+
+This fork accepts a list of core step names to skip on every new run and rerun.
+For example, `default_skip_steps: [document]` keeps the Document step off.
+Per-run `--skip` values add to this list and cannot narrow it. An absent or empty
+list preserves the default behavior. Unknown or malformed entries fail config
+loading; custom gate names are not accepted. The valid names are `intent`,
+`rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
+The setting is global-only and does not change already-created runs.
+
+## Example configuration
+
 ```yaml
 # ~/.no-mistakes/config.yaml
 

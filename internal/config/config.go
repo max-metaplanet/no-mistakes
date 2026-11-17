@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -178,6 +179,7 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
+	DefaultSkipSteps     []types.StepName    `yaml:"default_skip_steps,omitempty"`
 	SourceYAML           []byte              `yaml:"-"`
 	Agent                types.AgentName     `yaml:"agent"`
 	Agents               []types.AgentName   `yaml:"-"`
@@ -286,6 +288,7 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
+	DefaultSkipSteps          []yaml.Node                `yaml:"default_skip_steps"`
 	Agent                     agentList                  `yaml:"agent"`
 	ACPXPath                  string                     `yaml:"acpx_path"`
 	ForgejoAXIPath            string                     `yaml:"forgejo_axi_path"`
@@ -2658,6 +2661,16 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	for _, value := range raw.DefaultSkipSteps {
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return nil, fmt.Errorf("parse global config: default_skip_steps: expected a step name string at line %d", value.Line)
+		}
+		step := types.StepName(strings.TrimSpace(value.Value))
+		if !slices.Contains(types.AllSteps(), step) {
+			return nil, fmt.Errorf("parse global config: default_skip_steps: unknown step %q", step)
+		}
+		cfg.DefaultSkipSteps = append(cfg.DefaultSkipSteps, step)
 	}
 	var repoOnly struct {
 		AutoFix struct {
