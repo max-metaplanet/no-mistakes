@@ -87,13 +87,13 @@ You can't reorder steps. You *can*:
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.
 - Add repository gates after selected core steps.
 - Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, `no-mistakes axi run --skip <steps>`, or from the TUI.
+- This fork also supports global [`default_skip_steps`](/no-mistakes/reference/global-config/#default_skip_steps-fork-only) for new runs and reruns. Upstream does not support permanent skips. The pipeline still contains all nine steps and records skipped steps as skipped.
 
 See [Configuration](/no-mistakes/guides/configuration/).
 
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
 - Removing or replacing a core step. A repository can add extra [`gates`](/no-mistakes/reference/repo-config/#gates) after one, which only ever adds to what a pass means.
 
 This is intentional. A pass has the same core guarantees across repositories, and repository gates can add guarantees without removing any of them.

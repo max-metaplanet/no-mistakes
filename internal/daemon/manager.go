@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1825,7 +1826,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetExecutionEnvironment(originEnvironment(run, m.paths.Socket(), runenv.Overlay{}))
-	executor.SetSkippedSteps(skipSteps)
+	executor.SetSkippedSteps(append(slices.Clone(globalCfg.DefaultSkipSteps), skipSteps...))
 	if retry != nil {
 		executor.SetRetrySource(retry.source.ID)
 	}
